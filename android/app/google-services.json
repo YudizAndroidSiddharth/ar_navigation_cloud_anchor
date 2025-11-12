@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "739833880189",
+    "project_id": "ar-navigation-poc",
+    "storage_bucket": "ar-navigation-poc.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:739833880189:android:6bdb154f46927604691b14",
+        "android_client_info": {
+          "package_name": "com.example.ar_navigation_cloud_anchor"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAXMZqhyBte223Xkh8cLUcE0HccDeTwP00"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
