@@ -49,6 +49,7 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
 
   // Firebase
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  DateTime? _lastPlaneTapAt; // for double-tap gating on AR hit-tests
 
   @override
   void initState() {
@@ -366,6 +367,15 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
         _showError('No surface found');
         return;
       }
+      // Double-tap gating: require two taps within 300ms
+      final now = DateTime.now();
+      if (_lastPlaneTapAt == null ||
+          now.difference(_lastPlaneTapAt!).inMilliseconds > 300) {
+        _lastPlaneTapAt = now;
+        _showHint('Double-tap to place marker');
+        return;
+      }
+      _lastPlaneTapAt = null; // reset after a successful double tap
       // Prefer planes over feature points
       hits.sort((a, b) => a.type.index.compareTo(b.type.index));
       final hit = hits.first;

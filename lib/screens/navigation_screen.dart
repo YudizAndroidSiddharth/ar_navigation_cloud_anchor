@@ -459,12 +459,12 @@ class _NavigationScreenState extends State<NavigationScreen> {
             if (isNavigating && _destinationAnchor != null) ...[
               const SizedBox(height: 4),
               Text(
-                'Final Destination: ${_destinationAnchor!.name} (${_destinationDistance.toStringAsFixed(2)}m)',
+                'Progress: Step ${_currentWaypointIndex + 1} of ${_navigationPath.length}',
                 style: const TextStyle(color: Colors.white70, fontSize: 12),
               ),
               const SizedBox(height: 4),
               Text(
-                'Progress: ${_currentWaypointIndex + 1}/${_navigationPath.length} waypoints',
+                'Final Goal: ${_destinationAnchor!.name} (${_destinationDistance.toStringAsFixed(2)}m)',
                 style: const TextStyle(color: Colors.white70, fontSize: 12),
               ),
               const SizedBox(height: 8),
@@ -810,60 +810,55 @@ class _NavigationScreenState extends State<NavigationScreen> {
   List<PlacedAnchor> _buildNavigationPath(PlacedAnchor destination) {
     final devicePos = _getCurrentDevicePosition();
 
-    // Find nearest active anchor
-    PlacedAnchor? nearestAnchor;
+    // Find nearest active anchor to start from
+    PlacedAnchor? startAnchor;
     double minDistance = double.infinity;
     for (final anchor in _placedAnchors) {
       if (anchor.status != AnchorStatus.active) continue;
-      final anchorPos = anchor.transform.getTranslation();
-      final distance = (anchorPos - devicePos).length;
+      final distance = (anchor.transform.getTranslation() - devicePos).length;
       if (distance < minDistance) {
         minDistance = distance;
-        nearestAnchor = anchor;
+        startAnchor = anchor;
       }
     }
-    if (nearestAnchor == null) {
-      print('⚠️ No active anchors for path');
-      return [destination];
-    }
 
-    final path = <PlacedAnchor>[];
-    if (nearestAnchor.sequenceNumber <= destination.sequenceNumber) {
-      PlacedAnchor? current = nearestAnchor;
-      while (current != null) {
+    if (startAnchor == null) return [destination];
+
+    // Build sequential path using anchor connectivity
+    List<PlacedAnchor> path = [];
+    Set<String> visited = {}; // Prevent infinite loops
+
+    if (startAnchor.sequenceNumber <= destination.sequenceNumber) {
+      // Navigate forward through anchor chain
+      PlacedAnchor? current = startAnchor;
+      while (current != null && !visited.contains(current.id)) {
         path.add(current);
+        visited.add(current.id);
         if (current.id == destination.id) break;
-        if (current.nextAnchorId != null) {
-          final next = _placedAnchors
-              .where((a) => a.id == current!.nextAnchorId)
-              .toList();
-          if (next.isEmpty) break;
-          current = next.first;
-          if (current.id == path.last.id) break;
-        } else {
-          break;
-        }
+
+        // Find next anchor in sequence
+        current = _placedAnchors.cast<PlacedAnchor?>().firstWhere(
+          (a) => a?.id == current?.nextAnchorId,
+          orElse: () => null,
+        );
       }
     } else {
-      PlacedAnchor? current = nearestAnchor;
-      while (current != null) {
+      // Navigate backward through anchor chain
+      PlacedAnchor? current = startAnchor;
+      while (current != null && !visited.contains(current.id)) {
         path.add(current);
+        visited.add(current.id);
         if (current.id == destination.id) break;
-        if (current.previousAnchorId != null) {
-          final prev = _placedAnchors
-              .where((a) => a.id == current!.previousAnchorId)
-              .toList();
-          if (prev.isEmpty) break;
-          current = prev.first;
-          if (current.id == path.last.id) break;
-        } else {
-          break;
-        }
+
+        // Find previous anchor in sequence
+        current = _placedAnchors.cast<PlacedAnchor?>().firstWhere(
+          (a) => a?.id == current?.previousAnchorId,
+          orElse: () => null,
+        );
       }
     }
 
-    if (path.isEmpty) return [destination];
-    return path;
+    return path.isNotEmpty ? path : [destination];
   }
 
   void _updateNavigationPath() {
@@ -884,39 +879,55 @@ class _NavigationScreenState extends State<NavigationScreen> {
         final waypointPos = _currentWaypoint!.transform.getTranslation();
         final waypointDist = (waypointPos - devicePos).length;
 
-        final destPos = _destinationAnchor!.transform.getTranslation();
-        final destDist = (destPos - devicePos).length;
+        // Dynamic threshold: 1-2 meters based on proximity
+        final threshold = math.max(1.0, math.min(2.0, waypointDist * 0.6));
 
-        if (waypointDist < 1.5 &&
-            _currentWaypointIndex < _navigationPath.length - 1) {
-          setState(() {
-            _currentWaypointIndex++;
-            _currentWaypoint = _navigationPath[_currentWaypointIndex];
-          });
-          print('✅ Waypoint reached, advancing to ${_currentWaypoint!.name}');
+        // Check if reached current waypoint
+        if (waypointDist < threshold) {
+          if (_currentWaypointIndex < _navigationPath.length - 1) {
+            // Advance to next waypoint
+            final oldWaypoint = _currentWaypoint!.name;
+            setState(() {
+              _currentWaypointIndex++;
+              _currentWaypoint = _navigationPath[_currentWaypointIndex];
+            });
+            print(
+              '✅ Reached $oldWaypoint, advancing to ${_currentWaypoint!.name}',
+            );
+            _showHint(
+              '✅ $oldWaypoint reached! Next: ${_currentWaypoint!.name}',
+            );
+          } else {
+            // Reached final destination
+            if (!_hasReachedDestination) {
+              setState(() {
+                _hasReachedDestination = true;
+              });
+              print(
+                '🎯 Final destination reached: ${_destinationAnchor!.name}',
+              );
+              _showHint(
+                '🎯 Congratulations! You have reached ${_destinationAnchor!.name}!',
+              );
+            }
+          }
         }
 
-        final isFinal = _currentWaypoint!.id == _destinationAnchor!.id;
-        final reached = isFinal && destDist < 2.0;
+        // Update distance tracking
+        final destPos = _destinationAnchor!.transform.getTranslation();
+        final destDist = (destPos - devicePos).length;
         setState(() {
           _waypointDistance = waypointDist;
           _destinationDistance = destDist;
-          if (reached && !_hasReachedDestination) {
-            _hasReachedDestination = true;
-            _showHint('🎯 You have reached ${_destinationAnchor!.name}!');
-          } else if (!reached && _hasReachedDestination) {
-            _hasReachedDestination = false;
-          }
         });
       }
     } else {
-      // No destination: maintain nearest anchor
+      // No destination set - just track nearest anchor
       PlacedAnchor? nearest;
       double minDistance = double.infinity;
       for (final anchor in _placedAnchors) {
         if (anchor.status != AnchorStatus.active) continue;
-        final anchorPos = anchor.transform.getTranslation();
-        final distance = (anchorPos - devicePos).length;
+        final distance = (anchor.transform.getTranslation() - devicePos).length;
         if (distance < minDistance) {
           minDistance = distance;
           nearest = anchor;
@@ -936,10 +947,17 @@ class _NavigationScreenState extends State<NavigationScreen> {
     int index,
     int total,
   ) {
-    if (total <= 1) return 'Head towards ${waypoint.name}';
-    if (index == 0) return 'Head towards ${waypoint.name}';
-    if (index == total - 1) return 'Final destination: ${waypoint.name}';
-    return 'Continue to ${waypoint.name}';
+    if (total == 1) {
+      return 'Navigate directly to ${waypoint.name}';
+    }
+    if (index == 0) {
+      return 'Start: Head towards ${waypoint.name}';
+    } else if (index == total - 1) {
+      return 'Final destination: ${waypoint.name}';
+    } else {
+      final remaining = total - index - 1;
+      return 'Continue to ${waypoint.name} ($remaining more stops)';
+    }
   }
 
   void _debugNavigationSystem() {
