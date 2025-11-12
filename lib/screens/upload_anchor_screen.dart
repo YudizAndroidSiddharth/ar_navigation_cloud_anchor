@@ -49,7 +49,7 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
 
   // Firebase
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  DateTime? _lastPlaneTapAt; // for double-tap gating on AR hit-tests
+  DateTime? _uploadStartTime;
 
   @override
   void initState() {
@@ -123,21 +123,13 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
           // Top status bar
           Positioned(top: 40, left: 16, right: 16, child: _renderStatusBar()),
 
-          // Instructions
-          Positioned(
-            top: 100,
-            left: 16,
-            right: 16,
-            child: _renderInstructions(),
-          ),
-
           // Bottom controls
           Positioned(left: 16, right: 16, bottom: 24, child: _renderControls()),
 
           // Save Map button (if anchors uploaded)
           if (_uploadedMarkers.isNotEmpty)
             Positioned(
-              top: 180,
+              top: 100,
               left: 16,
               right: 16,
               child: _renderSaveMapButton(),
@@ -152,80 +144,45 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.7),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Markers: ${_placedMarkers.length}',
-                style: const TextStyle(color: Colors.white, fontSize: 14),
-              ),
-              if (_isUploading)
-                const Row(
-                  children: [
-                    SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    ),
-                    SizedBox(width: 8),
-                    Text(
-                      'Uploading...',
-                      style: TextStyle(color: Colors.white, fontSize: 14),
-                    ),
-                  ],
-                ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Device: (${devicePos.x.toStringAsFixed(1)}, ${devicePos.y.toStringAsFixed(1)}, ${devicePos.z.toStringAsFixed(1)})',
-            style: const TextStyle(color: Colors.yellow, fontSize: 12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 10,
+            offset: const Offset(0, 6),
           ),
         ],
       ),
-    );
-  }
-
-  Widget _renderInstructions() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.blue.withOpacity(0.9),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          const Row(
-            children: [
-              Icon(Icons.info, color: Colors.white, size: 20),
-              SizedBox(width: 8),
-              Text(
-                'Instructions',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
           Text(
-            '1. Double-tap anywhere to place 3D marker\n'
-            '2. The Porsche model shows anchor location\n'
-            '3. Select marker & click "Upload Anchor"',
-            style: const TextStyle(color: Colors.white, fontSize: 14),
+            'Markers: ${_placedMarkers.length}',
+            style: const TextStyle(
+              color: Colors.black87,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
           ),
+          if (_isUploading)
+            const Row(
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.indigo,
+                  ),
+                ),
+                SizedBox(width: 8),
+                Text(
+                  'Uploading...',
+                  style: TextStyle(color: Colors.black87, fontSize: 14),
+                ),
+              ],
+            ),
         ],
       ),
     );
@@ -367,15 +324,6 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
         _showError('No surface found');
         return;
       }
-      // Double-tap gating: require two taps within 300ms
-      final now = DateTime.now();
-      if (_lastPlaneTapAt == null ||
-          now.difference(_lastPlaneTapAt!).inMilliseconds > 300) {
-        _lastPlaneTapAt = now;
-        _showHint('Double-tap to place marker');
-        return;
-      }
-      _lastPlaneTapAt = null; // reset after a successful double tap
       // Prefer planes over feature points
       hits.sort((a, b) => a.type.index.compareTo(b.type.index));
       final hit = hits.first;
@@ -637,16 +585,19 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
       _isUploading = true;
     });
 
-    // Set timeout
+    // Reduce timeout
     _uploadTimeoutTimer?.cancel();
-    _uploadTimeoutTimer = Timer(const Duration(seconds: 30), () {
+    _uploadTimeoutTimer = Timer(const Duration(seconds: 15), () {
       if (mounted && _isUploading) {
         setState(() {
           _isUploading = false;
         });
-        _showError('Upload timeout');
+        _showError('Upload timeout - check network connection');
       }
     });
+
+    _uploadStartTime = DateTime.now();
+    _showHint('🔵 Starting upload for ${_selectedMarker!.name}...');
 
     // Upload anchor
     try {
@@ -657,7 +608,7 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
       setState(() {
         _isUploading = false;
       });
-      _showError('Error uploading anchor: $e');
+      _showError('Upload failed: $e');
     }
   }
 
@@ -691,6 +642,13 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
     log('--------🔵 Anchor uploaded callback');
     _uploadTimeoutTimer?.cancel();
 
+    if (_uploadStartTime != null) {
+      final duration = DateTime.now().difference(_uploadStartTime!);
+      log('⏱️ Total upload time: ${duration.inMilliseconds}ms');
+    }
+
+    _showHint('🔵 Processing upload...');
+
     if (anchor is ARPlaneAnchor && anchor.cloudanchorid != null) {
       // Find matching marker
       final marker = _placedMarkers.firstWhere(
@@ -698,18 +656,27 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
         orElse: () => _placedMarkers.first,
       );
 
-      // Save to Firebase
-      await _saveAnchorToFirebase(marker, anchor.cloudanchorid!);
-
+      _showHint('💾 Saving to database...');
+      try {
+        await _saveAnchorToFirebase(marker, anchor.cloudanchorid!);
+        setState(() {
+          _isUploading = false;
+          _selectedMarker = null;
+          _placedMarkers.remove(marker);
+          _uploadedMarkers.add(marker);
+        });
+        _showHint('✅ ${marker.name} uploaded successfully!');
+      } catch (e) {
+        setState(() {
+          _isUploading = false;
+        });
+        _showError('Database save failed: $e');
+      }
+    } else {
       setState(() {
         _isUploading = false;
-        _selectedMarker = null;
-        // Move marker to uploaded list
-        _placedMarkers.remove(marker);
-        _uploadedMarkers.add(marker);
       });
-
-      _showHint('✅ ${marker.name} uploaded successfully!');
+      _showError('Upload completed but no cloud anchor ID received');
     }
   }
 
@@ -718,20 +685,24 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
     String cloudAnchorId,
   ) async {
     try {
+      final batch = _firestore.batch();
+
       // Initialize map if not exists
       if (_currentMapId == null) {
         _currentMapId = 'map_${DateTime.now().millisecondsSinceEpoch}';
-        final mapData = {
+        final mapRef = _firestore.collection('maps').doc(_currentMapId);
+        batch.set(mapRef, {
           'id': _currentMapId,
           'name': 'Map ${DateTime.now().toString().substring(0, 16)}',
           'createdAt': DateTime.now().toIso8601String(),
           'anchorCount': 0,
-        };
-        await _firestore.collection('maps').doc(_currentMapId).set(mapData);
+        });
       }
 
-      // Save anchor to map
-      final anchorData = {
+      final mapRef = _firestore.collection('maps').doc(_currentMapId);
+      final anchorRef = mapRef.collection('anchors').doc(marker.id);
+
+      batch.set(anchorRef, {
         'id': marker.id,
         'name': marker.name,
         'cloudAnchorId': cloudAnchorId,
@@ -740,45 +711,20 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
           'y': marker.transform.getTranslation().y,
           'z': marker.transform.getTranslation().z,
         },
-        // Connectivity metadata
         'previousAnchorId': marker.previousMarkerId,
         'nextAnchorId': marker.nextMarkerId,
         'sequenceNumber': marker.sequenceNumber,
         'createdAt': DateTime.now().toIso8601String(),
-      };
-
-      await _firestore
-          .collection('maps')
-          .doc(_currentMapId)
-          .collection('anchors')
-          .doc(marker.id)
-          .set(anchorData);
-
-      // Try to update the previous anchor's nextAnchorId if it already exists in Firestore
-      if (marker.previousMarkerId != null) {
-        final prevDocRef = _firestore
-            .collection('maps')
-            .doc(_currentMapId)
-            .collection('anchors')
-            .doc(marker.previousMarkerId);
-        try {
-          await prevDocRef.update({'nextAnchorId': marker.id});
-        } catch (e) {
-          // It's possible previous anchor hasn't been uploaded yet; ignore
-          log(
-            '--------ℹ️ Could not update previous anchor nextAnchorId (may not exist yet): $e',
-          );
-        }
-      }
-
-      // Update map anchor count
-      await _firestore.collection('maps').doc(_currentMapId).update({
-        'anchorCount': _uploadedMarkers.length + 1,
       });
 
+      // Update map anchor count in same batch
+      batch.update(mapRef, {'anchorCount': _uploadedMarkers.length + 1});
+
+      await batch.commit();
       log('--------✅ Anchor saved to Firebase map: $_currentMapId');
     } catch (e) {
       log('--------❌ Error saving anchor to Firebase: $e');
+      rethrow;
     }
   }
 
