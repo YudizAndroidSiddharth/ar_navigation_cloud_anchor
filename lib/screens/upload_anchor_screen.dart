@@ -585,9 +585,9 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
       _isUploading = true;
     });
 
-    // Reduce timeout
+    // Increase timeout window to accommodate slower networks
     _uploadTimeoutTimer?.cancel();
-    _uploadTimeoutTimer = Timer(const Duration(seconds: 15), () {
+    _uploadTimeoutTimer = Timer(const Duration(seconds: 30), () {
       if (mounted && _isUploading) {
         setState(() {
           _isUploading = false;
@@ -716,6 +716,24 @@ class _UploadAnchorScreenState extends State<UploadAnchorScreen> {
         'sequenceNumber': marker.sequenceNumber,
         'createdAt': DateTime.now().toIso8601String(),
       });
+
+      // Update previous anchor's nextAnchorId in Firebase when available
+      if (marker.previousMarkerId != null) {
+        final previousAnchorRef = mapRef
+            .collection('anchors')
+            .doc(marker.previousMarkerId);
+        final prevSnap = await previousAnchorRef.get();
+        if (prevSnap.exists) {
+          batch.update(previousAnchorRef, {'nextAnchorId': marker.id});
+          log(
+            '--------🔗 Updated previous anchor ${marker.previousMarkerId} to link to ${marker.id}',
+          );
+        } else {
+          log(
+            '--------ℹ️ Previous anchor ${marker.previousMarkerId} not yet in DB; it will link when uploaded.',
+          );
+        }
+      }
 
       // Update map anchor count in same batch
       batch.update(mapRef, {'anchorCount': _uploadedMarkers.length + 1});

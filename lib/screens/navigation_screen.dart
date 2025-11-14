@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -81,11 +82,11 @@ class _NavigationScreenState extends State<NavigationScreen> {
       // Check if file already exists
       if (await modelFile.exists()) {
         _modelPath = modelFile.path;
-        print('✅ 3D model already exists at: $_modelPath');
+        log('-----✅ 3D model already exists at: $_modelPath');
         return;
       }
 
-      print('🔵 Copying 3D model from assets to documents folder...');
+      log('-----🔵 Copying 3D model from assets to documents folder...');
 
       // Load asset from Flutter assets
       final ByteData data = await rootBundle.load('assets/model/porche.glb');
@@ -95,9 +96,9 @@ class _NavigationScreenState extends State<NavigationScreen> {
       await modelFile.writeAsBytes(bytes);
       _modelPath = modelFile.path;
 
-      print('✅ 3D model copied to: $_modelPath');
+      log('-----✅ 3D model copied to: $_modelPath');
     } catch (e) {
-      print('⚠️ Error copying 3D model: $e');
+      log('-----⚠️ Error copying 3D model: $e');
     }
   }
 
@@ -138,8 +139,8 @@ class _NavigationScreenState extends State<NavigationScreen> {
           // Top status bar
           Positioned(top: 40, left: 16, right: 16, child: _renderStatusBar()),
 
-          // Navigation info overlay
-          if (_destinationAnchor != null)
+          // Navigation info overlay (only when navigating)
+          if (_currentWaypoint != null)
             Positioned(
               top: 100,
               left: 16,
@@ -147,7 +148,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
               child: _renderNavigationInfo(),
             ),
 
-          // Map selector button
+          // Map selector button (only when no map loaded)
           if (_loadedMapId == null)
             Positioned(
               top: 100,
@@ -156,25 +157,11 @@ class _NavigationScreenState extends State<NavigationScreen> {
               child: _renderMapSelector(),
             ),
 
-          // Anchor list (if map loaded)
-          if (_loadedMapId != null && _placedAnchors.isNotEmpty)
-            Positioned(
-              top: _destinationAnchor != null ? 180 : 100,
-              left: 16,
-              right: 16,
-              child: _renderAnchorList(),
-            ),
-
           // Bottom controls
           Positioned(left: 16, right: 16, bottom: 24, child: _renderControls()),
 
-          // Navigation arrow overlay (rendered last to ensure it's on top)
-          if (_destinationAnchor != null)
-            Positioned(
-              top: MediaQuery.of(context).size.height * 0.5 - 40,
-              left: MediaQuery.of(context).size.width * 0.5 - 40,
-              child: _renderNavigationArrow(),
-            ),
+          // Prominent 3D-style navigation arrow
+          if (_currentWaypoint != null) _renderEnhanced3DNavigationArrow(),
         ],
       ),
     );
@@ -492,88 +479,227 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  Widget _renderNavigationArrow() {
-    // Arrow should point to current waypoint (not directly to final destination)
-    final target = _currentWaypoint ?? _nearestAnchor ?? _destinationAnchor;
+  Widget _renderEnhanced3DNavigationArrow() {
+    final target = _currentWaypoint;
     if (target == null) return const SizedBox.shrink();
 
     final devicePos = _getCurrentDevicePosition();
-    final anchorPos = target.transform.getTranslation();
-    final direction = anchorPos - devicePos;
-
+    final targetPos = target.transform.getTranslation();
+    final direction = targetPos - devicePos;
     final horizontalDirection = Vector3(direction.x, 0, direction.z);
+    final distance = horizontalDirection.length;
 
-    final isNavigating = _destinationAnchor != null && _currentWaypoint != null;
-    final isReached = _hasReachedDestination;
-
-    // Debug: Print arrow state
-    print(
-      '🧭 Navigation Arrow - Heading: ${(_deviceHeading * 180 / math.pi).toStringAsFixed(1)}°, '
-      'Target: ${target.name}, '
-      'Mode: ${isNavigating ? "waypoint" : "nearest"}',
+    // Enhanced debug logging
+    log('-----🧭 3D Arrow Debug:');
+    log('-----   Target: ${target.name}');
+    log('-----   Distance: ${distance.toStringAsFixed(2)}m');
+    log(
+      '----Device Heading: ${(_deviceHeading * 180 / math.pi).toStringAsFixed(1)}°',
     );
 
-    // If very close or directly above/below, show up arrow
-    if (horizontalDirection.length < 0.01) {
-      return Container(
-        width: 80,
-        height: 80,
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isReached
-              ? Colors.orange.withOpacity(0.9)
-              : isNavigating
-              ? Colors.green.withOpacity(0.9)
-              : Colors.blue.withOpacity(0.9),
-          shape: BoxShape.circle,
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.5),
-              blurRadius: 15,
-              spreadRadius: 3,
+    // "You're here" indicator when very close
+    if (distance < 1.0) {
+      return Positioned(
+        top: MediaQuery.of(context).size.height * 0.5 - 75,
+        left: MediaQuery.of(context).size.width * 0.5 - 75,
+        child: Container(
+          width: 150,
+          height: 150,
+          decoration: BoxDecoration(
+            gradient: RadialGradient(
+              colors: [
+                Colors.green.withOpacity(0.9),
+                Colors.green.withOpacity(0.7),
+                Colors.green.withOpacity(0.95),
+              ],
+              stops: const [0.2, 0.7, 1.0],
             ),
-          ],
-        ),
-        child: Icon(
-          isReached ? Icons.check_circle : Icons.arrow_upward,
-          color: Colors.white,
-          size: 50,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 5),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.green.withOpacity(0.6),
+                blurRadius: 30,
+                spreadRadius: 10,
+              ),
+              BoxShadow(
+                color: Colors.black.withOpacity(0.3),
+                blurRadius: 15,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: const Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.location_on,
+                color: Colors.white,
+                size: 50,
+                shadows: [
+                  Shadow(
+                    color: Colors.black54,
+                    offset: Offset(1, 1),
+                    blurRadius: 2,
+                  ),
+                ],
+              ),
+              SizedBox(height: 8),
+              Text(
+                'YOU\'RE HERE',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.2,
+                  shadows: [
+                    Shadow(
+                      color: Colors.black54,
+                      offset: Offset(1, 1),
+                      blurRadius: 2,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       );
     }
 
-    // Calculate angle to destination
+    // Calculate arrow rotation toward target
     final worldAngle = math.atan2(
       horizontalDirection.x,
       -horizontalDirection.z,
     );
     final relativeAngle = worldAngle - _deviceHeading;
 
-    return Transform.rotate(
-      angle: relativeAngle,
-      child: Container(
-        width: 80,
-        height: 80,
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isReached
-              ? Colors.orange.withOpacity(0.9)
-              : isNavigating
-              ? Colors.green.withOpacity(0.9)
-              : Colors.blue.withOpacity(0.9),
-          shape: BoxShape.circle,
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.5),
-              blurRadius: 15,
-              spreadRadius: 3,
+    // Progressive arrow size based on distance
+    final double arrowSize = math.min(
+      160.0,
+      math.max(120.0, 100.0 + (distance * 8.0)),
+    );
+
+    return Positioned(
+      top: MediaQuery.of(context).size.height * 0.5 - arrowSize / 2,
+      left: MediaQuery.of(context).size.width * 0.5 - arrowSize / 2,
+      child: Transform.rotate(
+        angle: relativeAngle,
+        child: Container(
+          width: arrowSize,
+          height: arrowSize,
+          decoration: BoxDecoration(
+            gradient: RadialGradient(
+              center: const Alignment(-0.3, -0.3),
+              colors: [
+                Colors.orange.withOpacity(0.95),
+                Colors.orange.withOpacity(0.8),
+                Colors.orange.withOpacity(0.9),
+                Colors.deepOrange.withOpacity(0.95),
+              ],
+              stops: const [0.0, 0.4, 0.7, 1.0],
             ),
-          ],
-        ),
-        child: Icon(
-          isReached ? Icons.check_circle : Icons.arrow_upward,
-          color: Colors.white,
-          size: 50,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 4),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.4),
+                blurRadius: 25,
+                spreadRadius: 5,
+                offset: const Offset(0, 12),
+              ),
+              BoxShadow(
+                color: Colors.orange.withOpacity(0.6),
+                blurRadius: 35,
+                spreadRadius: 12,
+                offset: const Offset(0, 0),
+              ),
+              BoxShadow(
+                color: Colors.white.withOpacity(0.3),
+                blurRadius: 10,
+                spreadRadius: 2,
+                offset: const Offset(-2, -2),
+              ),
+            ],
+          ),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Icon(
+                Icons.navigation,
+                color: Colors.white,
+                size: arrowSize * 0.45,
+                shadows: [
+                  Shadow(
+                    color: Colors.black.withOpacity(0.8),
+                    offset: const Offset(3, 3),
+                    blurRadius: 6,
+                  ),
+                  Shadow(
+                    color: Colors.orange.withOpacity(0.5),
+                    offset: const Offset(-1, -1),
+                    blurRadius: 3,
+                  ),
+                ],
+              ),
+              Positioned(
+                bottom: arrowSize * 0.12,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        Colors.black.withOpacity(0.9),
+                        Colors.black.withOpacity(0.7),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: Colors.white.withOpacity(0.4),
+                      width: 1,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.5),
+                        blurRadius: 8,
+                        offset: const Offset(0, 3),
+                      ),
+                    ],
+                  ),
+                  child: Text(
+                    '${distance.toStringAsFixed(0)}m',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: arrowSize * 0.1,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.0,
+                      shadows: [
+                        Shadow(
+                          color: Colors.black.withOpacity(0.7),
+                          offset: const Offset(1, 1),
+                          blurRadius: 2,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              Positioned.fill(
+                child: Container(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: Colors.white.withOpacity(0.2),
+                      width: 2,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -657,7 +783,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     ARAnchorManager anchorManager,
     ARLocationManager locationManager,
   ) {
-    print('🔵 AR View created - initializing...');
+    log('-----🔵 AR View created - initializing...');
     _sessionManager = sessionManager;
     _objectManager = objectManager;
     _anchorManager = anchorManager;
@@ -678,7 +804,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     _devicePosition = Vector3.zero();
     _startTrackingDevicePosition();
 
-    print('✅ AR initialized');
+    log('-----✅ AR initialized');
   }
 
   void _startTrackingDevicePosition() {
@@ -861,6 +987,98 @@ class _NavigationScreenState extends State<NavigationScreen> {
     return path.isNotEmpty ? path : [destination];
   }
 
+  // Build the complete forward route starting from the first (lowest sequence) anchor.
+  List<PlacedAnchor> _buildCompleteSequentialRoute(
+    PlacedAnchor startingAnchor,
+  ) {
+    final route = <PlacedAnchor>[];
+    final visited = <String>{};
+
+    log('-----🔍 DEBUG: Building route starting from: ${startingAnchor.name}');
+    log('-----   Starting anchor nextAnchorId: ${startingAnchor.nextAnchorId}');
+    log(
+      '----Starting anchor previousAnchorId: ${startingAnchor.previousAnchorId}',
+    );
+    log(
+      '-----   Starting anchor sequenceNumber: ${startingAnchor.sequenceNumber}',
+    );
+
+    // log all available anchors for visibility
+    log('-----   Available anchors:');
+    for (final anchor in _placedAnchors) {
+      log(
+        '     - ${anchor.name}: id=${anchor.id}, seq=${anchor.sequenceNumber}, '
+        'next=${anchor.nextAnchorId}, prev=${anchor.previousAnchorId}, status=${anchor.status}',
+      );
+    }
+
+    PlacedAnchor? current = startingAnchor;
+
+    while (current != null && !visited.contains(current.id)) {
+      route.add(current);
+      visited.add(current.id);
+      log('-----   Added to route: ${current.name}');
+
+      if (_destinationAnchor != null && current.id == _destinationAnchor!.id) {
+        log(
+          '-----   Reached destination anchor in route build: ${current.name}',
+        );
+        break;
+      }
+
+      if (current.nextAnchorId != null) {
+        log('-----   Looking for next anchor with ID: ${current.nextAnchorId}');
+        current = _placedAnchors.cast<PlacedAnchor?>().firstWhere(
+          (a) => a?.id == current?.nextAnchorId,
+          orElse: () => null,
+        );
+        if (current != null) {
+          log('-----   Found next: ${current.name}');
+        } else {
+          log(
+            '-----   ❌ Next anchor not found for ID: ${route.last.nextAnchorId}',
+          );
+        }
+      } else {
+        log('-----   No nextAnchorId, ending chain');
+        break;
+      }
+    }
+
+    log(
+      '📍 Built route with ${route.length} waypoints: ${route.map((a) => a.name).join(" → ")}',
+    );
+    return route;
+  }
+
+  void _initializeSequentialNavigation() {
+    if (_placedAnchors.isEmpty) return;
+    // Sort to find the lowest sequence as starting point
+    _placedAnchors.sort((a, b) => a.sequenceNumber.compareTo(b.sequenceNumber));
+    final startingAnchor = _placedAnchors.first;
+
+    final fullRoute = _buildCompleteSequentialRoute(startingAnchor);
+    if (fullRoute.length < 2) {
+      _showError('Route needs at least 2 waypoints for navigation');
+      return;
+    }
+
+    setState(() {
+      _navigationPath = fullRoute;
+      _currentWaypointIndex = 0;
+      _currentWaypoint = fullRoute[0];
+      _destinationAnchor = fullRoute.last;
+      _hasReachedDestination = false;
+    });
+
+    log(
+      '------🗺️ Auto-started navigation: ${fullRoute.map((a) => a.name).join(" → ")}',
+    );
+    _showHint(
+      '🎯 Navigation started! Follow the arrow through ${fullRoute.length} waypoints',
+    );
+  }
+
   void _updateNavigationPath() {
     if (_placedAnchors.isEmpty) {
       setState(() {
@@ -891,8 +1109,8 @@ class _NavigationScreenState extends State<NavigationScreen> {
               _currentWaypointIndex++;
               _currentWaypoint = _navigationPath[_currentWaypointIndex];
             });
-            print(
-              '✅ Reached $oldWaypoint, advancing to ${_currentWaypoint!.name}',
+            log(
+              '------✅ Reached $oldWaypoint, advancing to ${_currentWaypoint!.name}',
             );
             _showHint(
               '✅ $oldWaypoint reached! Next: ${_currentWaypoint!.name}',
@@ -903,8 +1121,8 @@ class _NavigationScreenState extends State<NavigationScreen> {
               setState(() {
                 _hasReachedDestination = true;
               });
-              print(
-                '🎯 Final destination reached: ${_destinationAnchor!.name}',
+              log(
+                '-----🎯 Final destination reached: ${_destinationAnchor!.name}',
               );
               _showHint(
                 '🎯 Congratulations! You have reached ${_destinationAnchor!.name}!',
@@ -961,14 +1179,14 @@ class _NavigationScreenState extends State<NavigationScreen> {
   }
 
   void _debugNavigationSystem() {
-    print('📍 NAVIGATION DEBUG:');
-    print('   Device Position: ${_getCurrentDevicePosition()}');
-    print('   Current Waypoint: ${_currentWaypoint?.name}');
-    print(
-      '   Navigation Path: ${_navigationPath.map((a) => a.name).join(" → ")}',
+    log('-----📍 NAVIGATION DEBUG:');
+    log('-----   Device Position: ${_getCurrentDevicePosition()}');
+    log('-----   Current Waypoint: ${_currentWaypoint?.name}');
+    log(
+      '------Navigation Path: ${_navigationPath.map((a) => a.name).join(" → ")}',
     );
-    print(
-      '   Waypoint Progress: ${_currentWaypointIndex + 1}/${_navigationPath.length}',
+    log(
+      '------Waypoint Progress: ${_currentWaypointIndex + 1}/${_navigationPath.length}',
     );
   }
 
@@ -1080,7 +1298,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
 
       _showHint('✅ Map loaded: ${selectedMap['name']}');
     } catch (e) {
-      print('❌ Error loading map: $e');
+      log('-----❌ Error loading map: $e');
       setState(() {
         _isLoadingMap = false;
       });
@@ -1090,13 +1308,13 @@ class _NavigationScreenState extends State<NavigationScreen> {
 
   Future<void> _loadAnchorsFromMap(String mapId) async {
     try {
-      print('🔵 Loading anchors from map: $mapId');
+      log('-----🔵 Loading anchors from map: $mapId');
 
       for (final anchor in _placedAnchors) {
         try {
           await _anchorManager?.removeAnchor(anchor.arAnchor);
         } catch (e) {
-          print('Error removing anchor: $e');
+          log('-----Error removing anchor: $e');
         }
       }
 
@@ -1121,7 +1339,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
         return;
       }
 
-      print('🔵 Found ${anchorsSnapshot.docs.length} anchors in map');
+      log('-----🔵 Found ${anchorsSnapshot.docs.length} anchors in map');
 
       for (final anchorDoc in anchorsSnapshot.docs) {
         final anchorData = anchorDoc.data();
@@ -1131,7 +1349,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
           continue;
         }
 
-        print('🔵 Resolving cloud anchor: $cloudAnchorId');
+        log('-----🔵 Resolving cloud anchor: $cloudAnchorId');
 
         try {
           // Initiate cloud anchor resolution ONLY (no placeholders)
@@ -1156,7 +1374,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
             _placedAnchors.add(placedAnchor);
           });
         } catch (e) {
-          print('❌ Error downloading anchor $cloudAnchorId: $e');
+          log('-----❌ Error downloading anchor $cloudAnchorId: $e');
         }
       }
 
@@ -1164,10 +1382,35 @@ class _NavigationScreenState extends State<NavigationScreen> {
       _placedAnchors.sort(
         (a, b) => a.sequenceNumber.compareTo(b.sequenceNumber),
       );
-      print('✅ Initiated download for ${_placedAnchors.length} cloud anchors');
+      log(
+        '-----✅ Initiated download for ${_placedAnchors.length} cloud anchors',
+      );
     } catch (e) {
-      print('❌ Error loading anchors from map: $e');
+      log('-----❌ Error loading anchors from map: $e');
       _showError('Error loading anchors: $e');
+    }
+  }
+
+  // Debug helper: dump Firebase anchor data for a given map
+  Future<void> _debugFirebaseData(String mapId) async {
+    try {
+      log('-----🔍 DEBUG: Checking Firebase data for map: $mapId');
+      final anchorsSnapshot = await _firestore
+          .collection('maps')
+          .doc(mapId)
+          .collection('anchors')
+          .get();
+      log('-----   Found ${anchorsSnapshot.docs.length} anchors in Firebase:');
+      for (final doc in anchorsSnapshot.docs) {
+        final data = doc.data();
+        log('-----     - ${data['name']}');
+        log('-----       ID: ${data['id']}');
+        log('-----       Sequence: ${data['sequenceNumber']}');
+        log('-----       Previous: ${data['previousAnchorId']}');
+        log('-----       Next: ${data['nextAnchorId']}');
+      }
+    } catch (e) {
+      log('-----❌ Error checking Firebase data: $e');
     }
   }
 
@@ -1177,10 +1420,10 @@ class _NavigationScreenState extends State<NavigationScreen> {
     String anchorId,
   ) async {
     try {
-      print('🔵 Loading 3D model at resolved anchor origin');
-      print('   Anchor ID: $anchorId');
-      print(
-        '   Object Manager: ${_objectManager != null ? "initialized" : "null"}',
+      log('-----🔵 Loading 3D model at resolved anchor origin');
+      log('-----   Anchor ID: $anchorId');
+      log(
+        '------Object Manager: ${_objectManager != null ? "initialized" : "null"}',
       );
 
       // Create node with your downloaded 3D model
@@ -1188,21 +1431,21 @@ class _NavigationScreenState extends State<NavigationScreen> {
         try {
           // Ensure model is copied to documents folder
           if (_modelPath == null || !File(_modelPath!).existsSync()) {
-            print('⚠️ 3D model not available, copying from assets...');
+            log('-----⚠️ 3D model not available, copying from assets...');
             await _copyModelAssetToDocuments();
           }
 
           if (_modelPath == null || !File(_modelPath!).existsSync()) {
-            print(
-              '❌ 3D model file not available - cannot create visual marker',
+            log(
+              '-----❌ 3D model file not available - cannot create visual marker',
             );
-            print('🔄 Trying fallback built-in sphere...');
+            log('-----🔄 Trying fallback built-in sphere...');
             // Fallback to built-in sphere if model loading fails
             await _addBuiltInSphere(Vector3.zero(), anchorId);
             return;
           }
 
-          print('   Creating ARNode with local file: $_modelPath');
+          log('-----   Creating ARNode with local file: $_modelPath');
 
           // Create ARNode with 3D model from app documents folder
           // Note: NodeType.fileSystemAppFolderGLB expects just the filename, not full path
@@ -1217,8 +1460,8 @@ class _NavigationScreenState extends State<NavigationScreen> {
             scale: Vector3(0.2, 0.2, 0.2), // Adjust size (20cm)
           );
 
-          print('   ARNode created: ${modelNode.name}');
-          print('   Attempting to add node to scene...');
+          log('-----   ARNode created: ${modelNode.name}');
+          log('-----   Attempting to add node to scene...');
 
           // Add node to AR scene attached to the anchor
           final didAdd = await _objectManager!.addNode(
@@ -1227,35 +1470,37 @@ class _NavigationScreenState extends State<NavigationScreen> {
             planeAnchor: anchor is ARPlaneAnchor ? anchor : null,
           );
 
-          print('   addNode returned: $didAdd (type: ${didAdd.runtimeType})');
+          log(
+            '-----   addNode returned: $didAdd (type: ${didAdd.runtimeType})',
+          );
 
           if (didAdd == true) {
             _visualNodes[anchorId] = modelNode;
-            print('✅ 3D model attached to anchor successfully');
-            print('   Visual nodes count: ${_visualNodes.length}');
+            log('-----✅ 3D model attached to anchor successfully');
+            log('-----   Visual nodes count: ${_visualNodes.length}');
           } else {
-            print(
+            log(
               '⚠️ Failed to add visual node to scene - addNode returned false',
             );
-            print('🔄 Trying fallback built-in sphere...');
+            log('-----🔄 Trying fallback built-in sphere...');
             // Fallback to built-in sphere if model loading fails
             await _addBuiltInSphere(Vector3.zero(), anchorId);
           }
         } catch (e, stackTrace) {
-          print('❌ Failed to load 3D model: $e');
-          print('   Error type: ${e.runtimeType}');
-          print('🔍 Error details: ${e.toString()}');
-          print('   Stack trace: $stackTrace');
-          print('🔄 Trying fallback built-in sphere...');
+          log('-----❌ Failed to load 3D model: $e');
+          log('-----   Error type: ${e.runtimeType}');
+          log('-----🔍 Error details: ${e.toString()}');
+          log('-----   Stack trace: $stackTrace');
+          log('-----🔄 Trying fallback built-in sphere...');
           // Fallback to built-in sphere if model loading fails
           await _addBuiltInSphere(Vector3.zero(), anchorId);
         }
       } else {
-        print('❌ Object manager is null - cannot add visual marker');
+        log('-----❌ Object manager is null - cannot add visual marker');
       }
     } catch (e, stackTrace) {
-      print('❌ Error in _addMarkerVisual: $e');
-      print('   Stack trace: $stackTrace');
+      log('-----❌ Error in _addMarkerVisual: $e');
+      log('-----   Stack trace: $stackTrace');
     }
   }
 
@@ -1265,11 +1510,11 @@ class _NavigationScreenState extends State<NavigationScreen> {
       // Note: ar_flutter_plugin doesn't have built-in ArCoreSphere
       // We'll create a simple fallback using a basic shape if available
       // For now, just log that fallback was attempted
-      print('⚠️ Fallback sphere creation attempted for anchor: $anchorId');
-      print('   Position: $position');
+      log('-----⚠️ Fallback sphere creation attempted for anchor: $anchorId');
+      log('-----   Position: $position');
       // If you have a fallback sphere model, you could load it here
     } catch (e) {
-      print('❌ Both model and fallback failed: $e');
+      log('-----❌ Both model and fallback failed: $e');
     }
   }
 
@@ -1280,13 +1525,13 @@ class _NavigationScreenState extends State<NavigationScreen> {
         try {
           await _objectManager?.removeNode(entry.value);
         } catch (e) {
-          print('⚠️ Error removing node ${entry.key}: $e');
+          log('-----⚠️ Error removing node ${entry.key}: $e');
         }
       }
       _visualNodes.clear();
-      print('✅ All visual markers cleared');
+      log('-----✅ All visual markers cleared');
     } catch (e) {
-      print('❌ Error clearing markers: $e');
+      log('-----❌ Error clearing markers: $e');
     }
   }
 
@@ -1296,10 +1541,10 @@ class _NavigationScreenState extends State<NavigationScreen> {
       if (_visualNodes.containsKey(markerId)) {
         await _objectManager?.removeNode(_visualNodes[markerId]!);
         _visualNodes.remove(markerId);
-        print('✅ Marker removed: $markerId');
+        log('-----✅ Marker removed: $markerId');
       }
     } catch (e) {
-      print('❌ Error removing marker: $e');
+      log('-----❌ Error removing marker: $e');
     }
   }
 
@@ -1318,14 +1563,14 @@ class _NavigationScreenState extends State<NavigationScreen> {
       // Recreate marker with new scale
       await _addMarkerVisual(anchor.arAnchor, anchor.transform, anchor.id);
 
-      print('🔄 Marker scale updated to: $scale');
+      log('-----🔄 Marker scale updated to: $scale');
     } catch (e) {
-      print('❌ Error updating marker: $e');
+      log('-----❌ Error updating marker: $e');
     }
   }
 
   ARAnchor _onAnchorDownloaded(Map<String, dynamic> serializedAnchor) {
-    print('🔵 Anchor downloaded callback');
+    log('-----🔵 Anchor downloaded callback');
     final cloudAnchorId = serializedAnchor['cloudanchorid'] as String?;
     final dynamic resolved = serializedAnchor['anchor'];
     ARAnchor? resolvedAnchor;
@@ -1348,7 +1593,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
         (a) => a.cloudAnchorId == cloudAnchorId,
       );
       if (index == -1) {
-        print('❌ Resolved anchor not found for cloud ID: $cloudAnchorId');
+        log('-----❌ Resolved anchor not found for cloud ID: $cloudAnchorId');
         return resolvedAnchor;
       }
 
@@ -1378,7 +1623,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
       _addMarkerVisual(resolvedAnchor, resolvedTransform, updated.id);
 
       _checkResolutionProgress();
-      print('✅ Cloud anchor resolved and visual added: ${updated.name}');
+      log('-----✅ Cloud anchor resolved and visual added: ${updated.name}');
       return resolvedAnchor;
     }
 
@@ -1417,11 +1662,26 @@ class _NavigationScreenState extends State<NavigationScreen> {
     final resolved = _placedAnchors
         .where((a) => a.status == AnchorStatus.active)
         .length;
-    print('📊 Resolution Progress: $resolved/$total anchors resolved');
+    log('-----📊 Resolution Progress: $resolved/$total anchors resolved');
     if (resolved < total) {
       _showHint('Resolving anchors... $resolved/$total complete');
-    } else if (total > 0) {
-      _showHint('✅ All anchors resolved! Navigation ready.');
+      return;
+    }
+    // All anchors resolved - debug chain integrity and auto-start
+    log('-----🔍 DEBUG: All anchors resolved, checking chain integrity...');
+    for (final anchor in _placedAnchors) {
+      log(
+        '   Anchor: ${anchor.name}, id=${anchor.id}, seq=${anchor.sequenceNumber}, '
+        'next=${anchor.nextAnchorId}, prev=${anchor.previousAnchorId}',
+      );
+    }
+    if (_loadedMapId != null) {
+      _debugFirebaseData(_loadedMapId!);
+    }
+    _showHint('✅ All anchors resolved! Starting navigation...');
+    // AUTO-START: Initialize sequential navigation when all are resolved
+    if (total > 0 && _navigationPath.isEmpty) {
+      _initializeSequentialNavigation();
     }
   }
 

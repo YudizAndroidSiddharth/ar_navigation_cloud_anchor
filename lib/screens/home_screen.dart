@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'upload_anchor_screen.dart';
 import 'navigation_screen.dart';
+import '../poc/screens/poc_home_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -47,6 +48,20 @@ class HomeScreen extends StatelessWidget {
                     context,
                     MaterialPageRoute(
                       builder: (context) => const UploadAnchorScreen(),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
+              _ActionCard(
+                color: Colors.purple,
+                icon: Icons.explore,
+                title: 'POC',
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const PocHomeScreen(),
                     ),
                   );
                 },
