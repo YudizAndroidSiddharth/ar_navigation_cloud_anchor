@@ -5,20 +5,61 @@ import 'package:geolocator/geolocator.dart';
 
 import '../utils/geo_utils.dart';
 
+/// Simple LatLng model is assumed to be defined in geo_utils.dart:
+/// class LatLng { final double lat; final double lng; ... }
+/// LatLng lerpLatLng(LatLng a, LatLng b, double t);
+
+/// Internal representation of a filtered location sample.
 class FilteredLocation {
   final double lat;
   final double lng;
   final DateTime timestamp;
+
   const FilteredLocation(this.lat, this.lng, this.timestamp);
 }
 
+/// Service that exposes a smoothed, filtered location stream suitable for UI.
+///
+/// Pipeline:
+/// Raw GPS/WiFi/Cell location
+///   ↓
+/// Fused Location Provider (via Geolocator)
+///   ↓
+/// Accuracy Filter
+///   ↓
+/// Speed Filter → Jump Filter
+///   ↓
+/// Exponential/Kalman-like Filter (remove noise)
+///   ↓
+/// Moving Average (smooth)
+///   ↓
+/// Interpolation (smooth UI motion)
+///   ↓
+/// Final Position Stream for Map/UI
 class FilteredLocationService {
+  /// Max realistic speed (m/s). Anything above is discarded as noise.
   final double maxHumanSpeedMps;
+
+  /// Max jump distance in [jumpTimeThreshold] allowed before discarding as glitch.
   final double jumpDistanceMeters;
+
+  /// Time window to check for large jumps.
   final Duration jumpTimeThreshold;
-  final double alpha; // exponential smoothing factor
+
+  /// Exponential smoothing factor (0 < alpha < 1).
+  /// Smaller = smoother but more laggy.
+  final double alpha;
+
+  /// Window size for moving average.
   final int movingAverageWindow;
+
+  /// Threshold for discarding low-accuracy GPS readings.
+  final double accuracyThresholdMeters;
+
+  /// Duration for interpolating between filtered points for UI.
   final Duration interpolationDuration;
+
+  /// Tick duration for interpolation timer.
   final Duration interpolationTick;
 
   StreamSubscription<Position>? _positionSub;
@@ -31,33 +72,45 @@ class FilteredLocationService {
   LatLng? _uiPosition;
   Timer? _interpTimer;
 
+  /// Exposed derived values (optional but useful):
+  double? currentSpeedMps; // computed from lastValid -> current
+  double? currentCourseDegrees; // bearing of movement, 0–360°
+
   FilteredLocationService({
-    this.maxHumanSpeedMps = 15.0,
+    this.maxHumanSpeedMps = 15.0, // ~54 km/h
     this.jumpDistanceMeters = 50.0,
     this.jumpTimeThreshold = const Duration(seconds: 5),
     this.alpha = 0.2,
     this.movingAverageWindow = 5,
+    this.accuracyThresholdMeters = 30.0,
     this.interpolationDuration = const Duration(milliseconds: 350),
     this.interpolationTick = const Duration(milliseconds: 30),
   });
 
+  /// Smoothed, UI-ready position stream.
   Stream<LatLng> get filteredPosition$ => _controller.stream;
 
+  /// Start listening to location updates and feeding the pipeline.
   Future<void> start() async {
     await _positionSub?.cancel();
-    final settings = const LocationSettings(
-      accuracy: LocationAccuracy.best,
-      distanceFilter: 1,
+
+    const settings = LocationSettings(
+      accuracy: LocationAccuracy.bestForNavigation,
+      distanceFilter: 1, // meters
     );
+
     _positionSub = Geolocator.getPositionStream(locationSettings: settings)
         .listen(
           _onRawPosition,
           onError: (e, st) {
-            // swallow errors but keep the stream alive
+            // Keep the stream alive; just log for debugging.
+            // In production, you might forward this to a logger.
+            // print('FilteredLocationService error: $e');
           },
         );
   }
 
+  /// Stop listening to location stream and stop interpolation.
   Future<void> stop() async {
     await _positionSub?.cancel();
     _positionSub = null;
@@ -65,14 +118,26 @@ class FilteredLocationService {
     _interpTimer = null;
   }
 
-  void _onRawPosition(Position pos) {
-    final now = DateTime.now();
-    final raw = FilteredLocation(pos.latitude, pos.longitude, now);
+  /// Close the stream controller completely (if you don't need this service anymore).
+  /// Call this once (e.g. from a top-level dispose).
+  Future<void> dispose() async {
+    await stop();
+    await _controller.close();
+  }
 
-    // Step 1: Speed filter
+  void _onRawPosition(Position pos) {
+    // 0) Accuracy filter: discard very low-quality readings
+    final accuracy = pos.accuracy;
+    if (accuracy.isFinite && accuracy > accuracyThresholdMeters) {
+      return;
+    }
+
+    final timestamp = pos.timestamp ?? DateTime.now();
+    final raw = FilteredLocation(pos.latitude, pos.longitude, timestamp);
+
+    // 1) Speed filter + course computation
     if (_lastValid != null) {
-      final dtSec =
-          now.difference(_lastValid!.timestamp).inMilliseconds / 1000.0;
+      final dtSec = _deltaSeconds(_lastValid!.timestamp, raw.timestamp);
       if (dtSec > 0) {
         final dist = Geolocator.distanceBetween(
           _lastValid!.lat,
@@ -81,15 +146,28 @@ class FilteredLocationService {
           raw.lng,
         );
         final speed = dist / dtSec;
+
+        // Expose for external usage (e.g. heading fusion later)
+        currentSpeedMps = speed;
+
+        // Bearing of movement (course)
+        currentCourseDegrees = bearingBetween(
+          _lastValid!.lat,
+          _lastValid!.lng,
+          raw.lat,
+          raw.lng,
+        );
+
         if (speed > maxHumanSpeedMps) {
+          // Unrealistic speed → discard as glitch
           return;
         }
       }
     }
 
-    // Step 2: Jump filter
+    // 2) Jump filter
     if (_lastValid != null) {
-      final dt = now.difference(_lastValid!.timestamp);
+      final dt = raw.timestamp.difference(_lastValid!.timestamp);
       final dist = Geolocator.distanceBetween(
         _lastValid!.lat,
         _lastValid!.lng,
@@ -97,13 +175,15 @@ class FilteredLocationService {
         raw.lng,
       );
       if (dt < jumpTimeThreshold && dist > jumpDistanceMeters) {
+        // Big jump in small time window → discard as glitch
         return;
       }
     }
 
+    // Raw point accepted as valid base
     _lastValid = raw;
 
-    // Step 3: Exponential smoothing
+    // 3) Exponential / Kalman-like smoothing on lat/lng
     LatLng smoothed;
     if (_lastSmoothed == null) {
       smoothed = LatLng(raw.lat, raw.lng);
@@ -115,45 +195,64 @@ class FilteredLocationService {
     }
     _lastSmoothed = smoothed;
 
-    // Step 4: Moving average
+    // 4) Moving average window
     _window.add(smoothed);
     if (_window.length > movingAverageWindow) {
       _window.removeAt(0);
     }
-    final avg = _average(_window);
+    final averaged = _average(_window);
 
-    // Step 5: Interpolation for UI
-    _interpolateTo(avg);
+    // 5) Interpolation for UI smoothness
+    _interpolateTo(averaged);
+  }
+
+  double _deltaSeconds(DateTime a, DateTime b) {
+    return b.difference(a).inMilliseconds / 1000.0;
   }
 
   LatLng _average(List<LatLng> pts) {
-    double sumLat = 0, sumLng = 0;
+    double sumLat = 0;
+    double sumLng = 0;
+
     for (final p in pts) {
       sumLat += p.lat;
       sumLng += p.lng;
     }
-    return LatLng(sumLat / pts.length, sumLng / pts.length);
+
+    final n = pts.isEmpty ? 1 : pts.length.toDouble();
+    return LatLng(sumLat / n, sumLng / n);
   }
 
   void _interpolateTo(LatLng target) {
     _interpTimer?.cancel();
+
     final start = _uiPosition ?? target;
     _uiPosition ??= start;
+
+    // If no movement, just push target once.
     if ((start.lat - target.lat).abs() < 1e-12 &&
         (start.lng - target.lng).abs() < 1e-12) {
-      _controller.add(target);
       _uiPosition = target;
+      if (!_controller.isClosed) {
+        _controller.add(target);
+      }
       return;
     }
 
     final totalMs = interpolationDuration.inMilliseconds;
     int elapsed = 0;
+
     _interpTimer = Timer.periodic(interpolationTick, (timer) {
       elapsed += interpolationTick.inMilliseconds;
       final t = math.min(1.0, elapsed / totalMs);
+
       final current = lerpLatLng(start, target, t);
       _uiPosition = current;
-      _controller.add(current);
+
+      if (!_controller.isClosed) {
+        _controller.add(current);
+      }
+
       if (t >= 1.0) {
         timer.cancel();
       }

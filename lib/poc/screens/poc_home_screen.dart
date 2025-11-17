@@ -7,6 +7,10 @@ import '../models/saved_location.dart';
 import '../storage/location_storage.dart';
 import 'poc_navigation_screen.dart';
 
+/// Home screen for the POC:
+/// - Save current location with a name
+/// - List saved locations
+/// - Start navigation to a selected location
 class PocHomeScreen extends StatefulWidget {
   const PocHomeScreen({super.key});
 
@@ -16,8 +20,10 @@ class PocHomeScreen extends StatefulWidget {
 
 class _PocHomeScreenState extends State<PocHomeScreen> {
   final LocationStorage _storage = LocationStorage();
+
   List<SavedLocation> _locations = const [];
   SavedLocation? _selected;
+
   bool _permissionDenied = false;
   bool _serviceDisabled = false;
   bool _loading = true;
@@ -31,6 +37,7 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
   Future<void> _init() async {
     await _ensurePermission();
     await _loadLocations();
+    if (!mounted) return;
     setState(() {
       _loading = false;
     });
@@ -39,25 +46,32 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
   Future<void> _ensurePermission() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      _serviceDisabled = true;
+      if (!mounted) return;
+      setState(() {
+        _serviceDisabled = true;
+      });
       return;
     }
+
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
-      _permissionDenied = true;
-    } else {
-      _permissionDenied = false;
+
+    final denied =
+        permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever;
+
+    if (!mounted) return;
+    setState(() {
+      _permissionDenied = denied;
       _serviceDisabled = false;
-    }
-    setState(() {});
+    });
   }
 
   Future<void> _loadLocations() async {
     final list = await _storage.getLocations();
+    if (!mounted) return;
     setState(() {
       _locations = list;
       if (_selected == null && list.isNotEmpty) {
@@ -68,23 +82,30 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
 
   Future<void> _saveCurrentLocation() async {
     try {
+      // Use bestForNavigation for more stable data if available
       final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.best,
+        desiredAccuracy: LocationAccuracy.bestForNavigation,
       );
+
       final name = await _askForName();
-      if (!mounted || name == null || name.trim().isEmpty) return;
+      if (!mounted || name == null) return;
+
+      final trimmed = name.trim();
+      if (trimmed.isEmpty) return;
+
       final loc = SavedLocation(
-        name: name.trim(),
+        name: trimmed,
         latitude: pos.latitude,
         longitude: pos.longitude,
       );
+
       await _storage.addLocation(loc);
       await _loadLocations();
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Location saved')));
-      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Location saved')));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -95,6 +116,7 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
 
   Future<String?> _askForName() async {
     final controller = TextEditingController();
+
     return showDialog<String>(
       context: context,
       builder: (context) {
@@ -119,7 +141,7 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
     );
   }
 
-  void _openSettings() {
+  void _openAppSettings() {
     Geolocator.openAppSettings();
   }
 
@@ -128,14 +150,18 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
   }
 
   void _startNavigation() {
-    if (_selected == null) return;
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => PocNavigationScreen(target: _selected!),
-      ),
+    final target = _selected;
+    if (target == null) return;
+
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => PocNavigationScreen(target: target)),
     );
   }
+
+  bool get _canSaveLocation => !_permissionDenied && !_serviceDisabled;
+
+  bool get _canStartNavigation =>
+      _selected != null && !_permissionDenied && !_serviceDisabled;
 
   @override
   Widget build(BuildContext context) {
@@ -178,15 +204,13 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
                             'Grant location permission to continue',
                           ),
                           trailing: TextButton(
-                            onPressed: _openSettings,
+                            onPressed: _openAppSettings,
                             child: const Text('Open Settings'),
                           ),
                         ),
                       ),
                     ElevatedButton.icon(
-                      onPressed: _permissionDenied || _serviceDisabled
-                          ? null
-                          : _saveCurrentLocation,
+                      onPressed: _canSaveLocation ? _saveCurrentLocation : null,
                       icon: const Icon(Icons.my_location),
                       label: const Text('Save Current Location'),
                     ),
@@ -205,12 +229,15 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
                                   leading: Radio<SavedLocation>(
                                     value: loc,
                                     groupValue: _selected,
-                                    onChanged: (val) =>
-                                        setState(() => _selected = val),
+                                    onChanged: (val) {
+                                      if (val == null) return;
+                                      setState(() => _selected = val);
+                                    },
                                   ),
                                   title: Text(loc.name),
                                   subtitle: Text(
-                                    '${loc.latitude.toStringAsFixed(6)}, ${loc.longitude.toStringAsFixed(6)}',
+                                    '${loc.latitude.toStringAsFixed(6)}, '
+                                    '${loc.longitude.toStringAsFixed(6)}',
                                   ),
                                   trailing: selected
                                       ? const Icon(
@@ -225,12 +252,7 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
                     ),
                     const SizedBox(height: 12),
                     ElevatedButton.icon(
-                      onPressed:
-                          (_selected != null &&
-                              !_permissionDenied &&
-                              !_serviceDisabled)
-                          ? _startNavigation
-                          : null,
+                      onPressed: _canStartNavigation ? _startNavigation : null,
                       icon: const Icon(Icons.play_arrow),
                       label: const Text('Start'),
                       style: ElevatedButton.styleFrom(
