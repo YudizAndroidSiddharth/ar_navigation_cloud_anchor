@@ -25,6 +25,7 @@ dependencies:
   flutter_blue_plus: ^1.35.0
   beacon_broadcast: ^0.3.0
   wakelock_plus: ^1.1.1
+  get: ^4.7.2
 
 dev_dependencies:
   flutter_test:

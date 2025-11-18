@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'upload_anchor_screen.dart';
 import 'navigation_screen.dart';
-import '../poc/screens/poc_home_screen.dart';
+import '../poc/screens/poc_home_screen/poc_home_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});

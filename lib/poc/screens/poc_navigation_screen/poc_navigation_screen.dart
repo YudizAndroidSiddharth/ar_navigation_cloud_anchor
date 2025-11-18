@@ -9,10 +9,10 @@ import 'package:flutter_compass/flutter_compass.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-import '../models/ble_waypoint.dart';
-import '../models/saved_location.dart';
-import '../services/filtered_location_service.dart';
-import '../utils/geo_utils.dart';
+import '../../models/ble_waypoint.dart';
+import '../../models/saved_location.dart';
+import '../../services/filtered_location_service.dart';
+import '../../utils/geo_utils.dart';
 
 /// OPTIMIZED BLE Navigation Screen with Enhanced Accuracy and Real-time Updates
 ///
@@ -1248,7 +1248,11 @@ class _OptimizedNavigationScreenState extends State<PocNavigationScreen> {
               if (isReached) {
                 print(
                   '📍 Displaying waypoint: ${waypoint.label} (Order: ${waypoint.order}, ID: ${waypoint.id}) '
-                  'at visual position: ${reversedIndex == 0 ? "TOP" : reversedIndex == 1 ? "MIDDLE" : "BOTTOM"} '
+                  'at visual position: ${reversedIndex == 0
+                      ? "TOP"
+                      : reversedIndex == 1
+                      ? "MIDDLE"
+                      : "BOTTOM"} '
                   '(reached: $isReached)',
                 );
               }
