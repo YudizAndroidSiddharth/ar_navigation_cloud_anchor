@@ -132,7 +132,7 @@ class FilteredLocationService {
       return;
     }
 
-    final timestamp = pos.timestamp ?? DateTime.now();
+    final timestamp = pos.timestamp;
     final raw = FilteredLocation(pos.latitude, pos.longitude, timestamp);
 
     // 1) Speed filter + course computation

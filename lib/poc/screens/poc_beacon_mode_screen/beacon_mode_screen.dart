@@ -84,27 +84,25 @@ class PocBeaconModeScreen extends GetView<PocBeaconModeController> {
 
   /// Render broadcast insights card
   Widget _renderBroadcastInsights(ThemeData theme) {
-    return Obx(
-      () => Card(
-        color: theme.colorScheme.surfaceVariant.withOpacity(0.8),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Broadcast health', style: theme.textTheme.titleMedium),
-              const SizedBox(height: 12),
-              _renderStatusIndicator(theme),
-              const SizedBox(height: 16),
-              Divider(color: Colors.black.withOpacity(0.1)),
-              const SizedBox(height: 12),
-              _renderWaypointDetails(theme),
-              const SizedBox(height: 16),
-              Divider(color: Colors.black.withOpacity(0.1)),
-              const SizedBox(height: 12),
-              _renderPermissionStatus(theme),
-            ],
-          ),
+    return Card(
+      color: theme.colorScheme.surfaceVariant.withOpacity(0.8),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Broadcast health', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 12),
+            _renderStatusIndicator(theme),
+            const SizedBox(height: 16),
+            Divider(color: Colors.black.withOpacity(0.1)),
+            const SizedBox(height: 12),
+            _renderWaypointDetails(theme),
+            const SizedBox(height: 16),
+            Divider(color: Colors.black.withOpacity(0.1)),
+            const SizedBox(height: 12),
+            _renderPermissionStatus(theme),
+          ],
         ),
       ),
     );
