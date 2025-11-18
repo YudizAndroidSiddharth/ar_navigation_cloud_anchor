@@ -18,11 +18,20 @@ class SignalAnalyticsCard extends StatelessWidget {
       }
 
       final signals = controller.sortedActiveSignals;
-      if (signals.isEmpty) {
+      
+      // Show "scanning" only if there are no signals AND no reached waypoints
+      final hasReachedWaypoints = controller.orderedWaypoints.any((w) => w.reached);
+      if (signals.isEmpty && !hasReachedWaypoints) {
         return _buildNoSignalCard(theme);
       }
-
-      final strongest = signals.first;
+      
+      // If no active signals but we have reached waypoints, show the first reached one
+      final strongest = signals.isNotEmpty 
+          ? signals.first 
+          : controller.orderedWaypoints.firstWhere(
+              (w) => w.reached,
+              orElse: () => controller.orderedWaypoints.first,
+            );
       final color = controller.signalColorFor(strongest.id);
       final percent = controller.signalPercentFor(strongest.id);
       final distance = controller.signalDistanceFor(strongest.id);
