@@ -5,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 
 import '../models/saved_location.dart';
 import '../storage/location_storage.dart';
+import 'beacon_mode_screen.dart';
 import 'poc_navigation_screen.dart';
 
 /// Home screen for the POC:
@@ -158,6 +159,12 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
     );
   }
 
+  void _openBeaconMode() {
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const BeaconModeScreen()));
+  }
+
   bool get _canSaveLocation => !_permissionDenied && !_serviceDisabled;
 
   bool get _canStartNavigation =>
@@ -249,6 +256,15 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
                                 );
                               },
                             ),
+                    ),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: _openBeaconMode,
+                      icon: const Icon(Icons.bolt),
+                      label: const Text('Beacon Mode'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(48),
+                      ),
                     ),
                     const SizedBox(height: 12),
                     ElevatedButton.icon(

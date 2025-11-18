@@ -22,6 +22,9 @@ dependencies:
   geolocator: ^9.0.2
   flutter_compass: ^0.8.0
   shared_preferences: ^2.3.2
+  flutter_blue_plus: ^1.35.0
+  beacon_broadcast: ^0.3.0
+  wakelock_plus: ^1.1.1
 
 dev_dependencies:
   flutter_test:
