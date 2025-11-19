@@ -25,16 +25,9 @@ class PocNavigationController extends GetxController {
   // BLE configuration
   static const Duration _bleScanRestartInterval = Duration(seconds: 20);
   static const Duration _bleDeviceTimeout = Duration(seconds: 8);
-  static const double _rssiSmoothingFactor =
-      0.15; // More responsive for sub-meter accuracy
+  static const double _rssiSmoothingFactor = 0.25;
   static const int _rssiHistorySize = 15;
   static const int _rssiOutlierThreshold = 20;
-
-  // Enhanced RSSI thresholds optimized for 1.5m detection radius
-  static const int _rssiNear =
-      -55; // 1-2m (target threshold for 1.5m detection)
-  static const int _rssiMedium = -60; // 2-3m
-  static const int _rssiFar = -65; // 3-5m
 
   // GPS configuration
   static const double _reachThresholdMeters = 3.0;
@@ -196,10 +189,8 @@ class PocNavigationController extends GetxController {
 
       const minRssi = -100.0;
       const maxRssi = -50.0;
-      final progress = ((smoothed - minRssi) / (maxRssi - minRssi)).clamp(
-        0.0,
-        1.0,
-      );
+      final progress =
+          ((smoothed - minRssi) / (maxRssi - minRssi)).clamp(0.0, 1.0);
 
       final reversedLastIndex = sortedWaypoints.length - 1 - lastReachedIndex;
       final reversedNextIndex = sortedWaypoints.length - 1 - nextWaypointIndex;
@@ -283,7 +274,10 @@ class PocNavigationController extends GetxController {
       (_) => _recomputeActiveSignals(),
       time: const Duration(milliseconds: 80),
     );
-    _signalWorker = ever(signalQuality, (_) => _recomputeActiveSignals());
+    _signalWorker = ever(
+      signalQuality,
+      (_) => _recomputeActiveSignals(),
+    );
     _distanceWorker = ever<double?>(
       displayDistanceMeters,
       (_) => _checkReached(),
@@ -320,7 +314,8 @@ class PocNavigationController extends GetxController {
     }
 
     if (denied.isNotEmpty) {
-      final names = denied.map((p) => _getPermissionDisplayName(p)).join(', ');
+      final names =
+          denied.map((p) => _getPermissionDisplayName(p)).join(', ');
       SnackBarUtil.showErrorSnackbar('Permission denied: $names');
       final shouldOpenSettings = await Get.dialog<bool>(
         AlertDialog(
@@ -408,7 +403,7 @@ class PocNavigationController extends GetxController {
     } else {
       _smoothedDistanceMeters =
           adaptiveAlpha * rawDistance +
-          (1 - adaptiveAlpha) * _smoothedDistanceMeters!;
+              (1 - adaptiveAlpha) * _smoothedDistanceMeters!;
     }
 
     currentPosition.value = position;
@@ -459,34 +454,11 @@ class PocNavigationController extends GetxController {
 
       final wasReached = waypoint.reached;
       final threshold = _getDynamicThreshold(newSmoothed, matchedId);
-      final stableSamples = _getAdaptiveStableSamples(matchedId);
-
-      // Multi-factor validation before marking as reached (optimized for 1.5m detection)
-      final quality = signalQuality[matchedId] ?? 0.0;
-      final signalPercent = _calculateEnhancedSignalPercent(newSmoothed);
-      final calculatedDistance = _calculateDistanceFromRssi(newSmoothed);
-
-      // Check all conditions for waypoint detection (1.5m radius)
-      // At 1.5m: Signal% ≈ 62.5%, RSSI ≈ -55 dBm, Distance = 1.5m
-      final meetsRssiThreshold = newSmoothed >= threshold;
-      final meetsQualityThreshold =
-          quality > 0.60; // 60% quality for reliable detection
-      final meetsSignalPercentThreshold =
-          signalPercent >= 60; // 60% signal = ~1.5m (62.5% at exactly 1.5m)
-      final meetsDistanceThreshold =
-          calculatedDistance < 1.5; // Exactly 1.5m radius
-
-      // Only proceed with updateRssi if all conditions are met (or already reached)
-      bool shouldCheckReached =
-          wasReached ||
-          (meetsRssiThreshold &&
-              meetsQualityThreshold &&
-              meetsSignalPercentThreshold &&
-              meetsDistanceThreshold);
-
-      final justReached = shouldCheckReached
-          ? waypoint.updateRssi(newSmoothed.round(), threshold, stableSamples)
-          : false;
+      final justReached = waypoint.updateRssi(
+        newSmoothed.round(),
+        threshold,
+        _getAdaptiveStableSamples(matchedId),
+      );
 
       if ((newSmoothed - previousSmoothed).abs() >= 2.0 || justReached) {
         significantUpdate = true;
@@ -496,15 +468,9 @@ class PocNavigationController extends GetxController {
       smoothedRssi.refresh();
 
       if (justReached && !wasReached) {
-        completedWaypoints.value = _bleWaypoints.where((w) => w.reached).length;
-        SnackBarUtil.showSuccessSnackbar('✅ Reached ${waypoint.label}');
-        print(
-          '🎯 WAYPOINT REACHED: ${waypoint.label} | '
-          'RSSI: ${newSmoothed.toStringAsFixed(1)} dBm | '
-          'Quality: ${(quality * 100).toStringAsFixed(0)}% | '
-          'Signal: $signalPercent% | '
-          'Distance: ${calculatedDistance.toStringAsFixed(2)}m',
-        );
+        completedWaypoints.value =
+            _bleWaypoints.where((w) => w.reached).length;
+        SnackBarUtil.showSuccessSnackbar('Reached ${waypoint.label}');
       }
     }
 
@@ -537,13 +503,11 @@ class PocNavigationController extends GetxController {
       weightSum += weight;
     }
 
-    final weightedAverage = weightSum > 0
-        ? weightedSum / weightSum
-        : rawRssi.toDouble();
+    final weightedAverage =
+        weightSum > 0 ? weightedSum / weightSum : rawRssi.toDouble();
 
     final currentSmoothed = smoothedRssi[beaconId] ?? -100.0;
-    final newSmoothed =
-        _rssiSmoothingFactor * weightedAverage +
+    final newSmoothed = _rssiSmoothingFactor * weightedAverage +
         (1 - _rssiSmoothingFactor) * currentSmoothed;
 
     return newSmoothed;
@@ -569,22 +533,14 @@ class PocNavigationController extends GetxController {
       return;
     }
 
-    // Stricter variance threshold (200.0 instead of 400.0)
     final variance = _calculateRssiVariance(history);
-    final consistencyScore = math.max(0.0, 1.0 - (variance / 200.0));
-
-    // Non-linear penalty for inconsistency
-    final consistencyPenalty = math.pow(consistencyScore, 1.5);
-
+    final consistencyScore = math.max(0.0, 1.0 - (variance / 400.0));
     final strengthScore = _calculateStrengthScore(smoothed);
     final detection = detectionCount[beaconId] ?? 0;
+    final frequencyScore = math.min(1.0, detection / 20.0);
 
-    // Higher detection requirements (50+ for max score instead of 20)
-    final frequencyScore = math.min(1.0, detection / 50.0);
-
-    // Quality score with stricter weighting - rarely exceeds 90% except at very close range
     final qualityScore =
-        (consistencyPenalty * 0.5 + strengthScore * 0.3 + frequencyScore * 0.2)
+        (consistencyScore * 0.4 + strengthScore * 0.4 + frequencyScore * 0.2)
             .clamp(0.0, 1.0);
 
     signalQuality[beaconId] = qualityScore;
@@ -595,8 +551,7 @@ class PocNavigationController extends GetxController {
     if (readings.length < 2) return 0.0;
 
     final mean = readings.reduce((a, b) => a + b) / readings.length;
-    final variance =
-        readings
+    final variance = readings
             .map((rssi) => math.pow(rssi - mean, 2))
             .reduce((a, b) => a + b) /
         readings.length;
@@ -612,24 +567,20 @@ class PocNavigationController extends GetxController {
   int _getDynamicThreshold(double smoothedRssi, String beaconId) {
     final quality = signalQuality[beaconId] ?? 0.5;
 
-    // Optimized for 1.5m detection: RSSI ≈ -55 dBm at 1.5m
-    if (quality > 0.60 && smoothedRssi >= _rssiNear) {
-      return _rssiNear; // -55 dBm for 1.5m detection (1-2m range)
-    } else if (quality > 0.50 && smoothedRssi >= _rssiMedium) {
-      return _rssiMedium; // -60 dBm (2-3m range)
-    } else if (quality > 0.40 && smoothedRssi >= _rssiFar) {
-      return _rssiFar; // -65 dBm (3-5m range)
+    if (quality > 0.8 && smoothedRssi >= -55) {
+      return -55;
+    } else if (quality > 0.6 && smoothedRssi >= -65) {
+      return -65;
     } else {
-      return _rssiFar; // -65 dBm (far away, definitely not reached)
+      return -75;
     }
   }
 
   int _getAdaptiveStableSamples(String beaconId) {
     final quality = signalQuality[beaconId] ?? 0.5;
-    if (quality > 0.70) return 3; // Very good quality needs 3 samples
-    if (quality > 0.60) return 4; // Good quality needs 4
-    if (quality > 0.50) return 5; // Fair quality needs 5
-    return 6; // Poor quality needs 6 samples
+    if (quality > 0.8) return 2;
+    if (quality > 0.6) return 3;
+    return 5;
   }
 
   String? _performEnhancedDeviceMatching(
@@ -653,9 +604,7 @@ class PocNavigationController extends GetxController {
         if (nameUpper.contains(waypoint.id) ||
             nameUpper.contains('BEACON') ||
             nameUpper.contains('WAYPOINT') ||
-            nameUpper.contains(
-              waypoint.label.toUpperCase().replaceAll(' ', ''),
-            )) {
+            nameUpper.contains(waypoint.label.toUpperCase().replaceAll(' ', ''))) {
           return waypoint.id;
         }
       }
@@ -691,12 +640,10 @@ class PocNavigationController extends GetxController {
   }
 
   String _formatUuidFromBytes(List<int> uuidBytes) {
-    final hex = uuidBytes
-        .map((b) => b.toRadixString(16).padLeft(2, '0'))
-        .join('');
+    final hex = uuidBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
     return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
-            '${hex.substring(12, 16)}-${hex.substring(16, 20)}-'
-            '${hex.substring(20)}'
+        '${hex.substring(12, 16)}-${hex.substring(16, 20)}-'
+        '${hex.substring(20)}'
         .toUpperCase();
   }
 
@@ -705,24 +652,12 @@ class PocNavigationController extends GetxController {
 
     _lastSeenTimestamp.removeWhere((id, lastSeen) {
       if (lastSeen.isBefore(expiredThreshold)) {
-        final waypoint = _beaconMap[id];
-
-        // CRITICAL: Don't reset waypoints that are already reached
-        // Once a waypoint is reached, it should stay reached even if signal is lost
-        if (waypoint != null && waypoint.reached) {
-          // Keep reached waypoint data but mark signal as lost
-          // Don't clear RSSI completely, just set to a low value for display
-          // This preserves the waypoint's reached status
-          return false; // Keep in timestamp map to avoid resetting
-        }
-
-        // Only clear data for unreached waypoints
         smoothedRssi[id] = -100.0;
         signalQuality[id] = 0.0;
         detectionCount[id] = 0;
         _rssiHistory[id]?.clear();
 
-        // Only reset unreached waypoints
+        final waypoint = _beaconMap[id];
         waypoint?.reset();
         return true;
       }
@@ -736,35 +671,24 @@ class PocNavigationController extends GetxController {
   }
 
   void _recomputeActiveSignals() {
-    // Include waypoints that either:
-    // 1. Have active signal (RSSI > -95 and quality > 0.1), OR
-    // 2. Are already reached (preserve reached status even if signal is lost)
-    final filtered =
-        _bleWaypoints.where((waypoint) {
-          if (waypoint.reached) {
-            // Always include reached waypoints, even if signal is lost
-            return true;
-          }
-          // For unreached waypoints, only include if they have active signal
-          final rssi = smoothedRssi[waypoint.id] ?? -100.0;
-          final quality = signalQuality[waypoint.id] ?? 0.0;
-          return rssi > -95.0 && quality > 0.1;
-        }).toList()..sort((a, b) {
-          // Prioritize reached waypoints, then by signal strength
-          if (a.reached && !b.reached) return -1;
-          if (!a.reached && b.reached) return 1;
-
-          final rssiA = smoothedRssi[a.id] ?? -100.0;
-          final rssiB = smoothedRssi[b.id] ?? -100.0;
-          final qualityA = signalQuality[a.id] ?? 0.0;
-          final qualityB = signalQuality[b.id] ?? 0.0;
-          final scoreA = rssiA * (0.7 + qualityA * 0.3);
-          final scoreB = rssiB * (0.7 + qualityB * 0.3);
-          return scoreB.compareTo(scoreA);
-        });
+    final filtered = _bleWaypoints.where((waypoint) {
+      final rssi = smoothedRssi[waypoint.id] ?? -100.0;
+      final quality = signalQuality[waypoint.id] ?? 0.0;
+      return rssi > -95.0 && quality > 0.1;
+    }).toList()
+      ..sort((a, b) {
+        final rssiA = smoothedRssi[a.id] ?? -100.0;
+        final rssiB = smoothedRssi[b.id] ?? -100.0;
+        final qualityA = signalQuality[a.id] ?? 0.0;
+        final qualityB = signalQuality[b.id] ?? 0.0;
+        final scoreA = rssiA * (0.7 + qualityA * 0.3);
+        final scoreB = rssiB * (0.7 + qualityB * 0.3);
+        return scoreB.compareTo(scoreA);
+      });
 
     activeSignals.assignAll(filtered);
-    completedWaypoints.value = _bleWaypoints.where((w) => w.reached).length;
+    completedWaypoints.value =
+        _bleWaypoints.where((w) => w.reached).length;
   }
 
   void _checkReached() {
@@ -811,63 +735,23 @@ class PocNavigationController extends GetxController {
     );
   }
 
-  /// Physics-based signal percentage calculation using path loss model
-  ///
-  /// Returns accurate percentage based on actual proximity:
-  /// - 95%+ when < 0.5m from beacon
-  /// - 70%+ when < 1m from beacon
-  /// - 40%+ when < 3m from beacon
   int _calculateEnhancedSignalPercent(double rssi) {
-    // Path loss model parameters
-    const txPower = -59.0; // Typical BLE beacon transmit power
-    const pathLossExponent = 2.4; // Indoor environment
+    const minRssi = -100.0;
+    const maxRssi = -30.0;
 
-    // Calculate distance from RSSI using path loss model
-    // Distance = 10^((TxPower - RSSI) / (10 * n))
-    final distance = math
-        .pow(10, (txPower - rssi) / (10 * pathLossExponent))
-        .toDouble();
-
-    // Convert distance to percentage using exponential decay
-    // At 0m: 100%, At 0.5m: ~95%, At 1m: ~70%, At 3m: ~40%, At 10m: ~10%
-    double percent;
-    if (distance <= 0.5) {
-      // Very close (<0.5m): 95-100%
-      percent = 95.0 + (0.5 - distance) * 10.0; // Linear from 95% to 100%
-    } else if (distance <= 1.0) {
-      // Close (0.5-1m): 70-95%
-      percent = 70.0 + (1.0 - distance) * 50.0; // Linear from 70% to 95%
-    } else if (distance <= 3.0) {
-      // Medium (1-3m): 40-70%
-      percent = 40.0 + (3.0 - distance) * 15.0; // Linear from 40% to 70%
-    } else if (distance <= 10.0) {
-      // Far (3-10m): 10-40%
-      percent = 10.0 + (10.0 - distance) * 4.29; // Linear from 10% to 40%
-    } else {
-      // Very far (>10m): 0-10%
-      percent = math.max(0.0, 10.0 - (distance - 10.0) * 1.0);
-    }
-
-    return percent.round().clamp(0, 100);
-  }
-
-  /// Calculate distance in meters from RSSI using path loss model
-  double _calculateDistanceFromRssi(double rssi) {
-    const txPower = -59.0;
-    const pathLossExponent = 2.4;
-
-    if (rssi >= -30) return 0.1; // Very close, assume <10cm
-
-    final distance = math
-        .pow(10, (txPower - rssi) / (10 * pathLossExponent))
-        .toDouble();
-    return distance.clamp(0.0, 100.0); // Cap at 100m
+    final normalized = ((rssi - minRssi) / (maxRssi - minRssi)).clamp(0.0, 1.0);
+    final enhanced = math.pow(normalized, 0.6);
+    return (enhanced * 100).round().clamp(0, 100);
   }
 
   String _calculatePreciseDistance(double rssi) {
-    final distance = _calculateDistanceFromRssi(rssi);
+    const txPower = -59.0;
+    const pathLossExponent = 2.4;
 
-    if (distance < 0.3) return '< 30cm';
+    if (rssi >= -30) return '< 30cm';
+
+    final distance = math.pow(10, (txPower - rssi) / (10 * pathLossExponent));
+
     if (distance < 0.5) return '≈ ${(distance * 100).round()} cm';
     if (distance < 1.0) return '≈ ${(distance * 100).round()} cm';
     if (distance < 5.0) return '≈ ${distance.toStringAsFixed(1)} m';
@@ -885,17 +769,13 @@ class PocNavigationController extends GetxController {
   }
 
   Color _getEnhancedSignalColor(double rssi, double quality) {
-    // Use physics-based signal percentage for color determination
-    final signalPercent = _calculateEnhancedSignalPercent(rssi);
+    final combinedScore = (rssi + 100) / 70 * 0.7 + quality * 0.3;
 
-    // Combine signal percentage with quality for color
-    final combinedScore = (signalPercent / 100.0) * 0.7 + quality * 0.3;
-
-    if (combinedScore >= 0.85) return Colors.green; // Very close (<1m)
-    if (combinedScore >= 0.70) return Colors.lightGreen; // Close (1-2m)
-    if (combinedScore >= 0.50) return Colors.orange; // Medium (2-3m)
-    if (combinedScore >= 0.30) return Colors.deepOrange; // Far (3-5m)
-    return Colors.red; // Very far (>5m)
+    if (combinedScore >= 0.8) return Colors.green;
+    if (combinedScore >= 0.6) return Colors.lightGreen;
+    if (combinedScore >= 0.4) return Colors.orange;
+    if (combinedScore >= 0.2) return Colors.deepOrange;
+    return Colors.red;
   }
 }
 
