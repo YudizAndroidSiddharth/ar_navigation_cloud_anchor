@@ -98,9 +98,22 @@ class PocNavigationController extends GetxController {
     // 'AA:BB:CC:DD:EE:03': 'BEACON_3',
   };
 
-  // Optional: map advertised UUIDs to waypoint IDs
+  // Map real beacon UUIDs to waypoint IDs
+  // Format: UUID must be uppercase with dashes: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+  // Supports: iBeacon (Apple) and AltBeacon formats
+  // To find your beacon UUID:
+  //   - Check your beacon manufacturer's app/configuration
+  //   - Use a BLE scanner app (like nRF Connect) to read the advertised UUID
+  //   - Look for the UUID in the iBeacon/AltBeacon manufacturer data
   final Map<String, String> _beaconUuidMap = const {
-    '00000001-0000-0000-0000-000000000001': 'BEACON_1',
+    // TODO: Replace these placeholder UUIDs with your REAL beacon UUIDs
+    // Example format (uncomment and replace with your actual UUIDs):
+    // 'B9407F30-F5F8-466E-AFF9-25556B57FE6D': 'BEACON_1', // Entry Point
+    // 'B9407F30-F5F8-466E-AFF9-25556B57FE6E': 'BEACON_2', // Midpoint
+    // 'B9407F30-F5F8-466E-AFF9-25556B57FE6F': 'BEACON_3', // Destination
+
+    // Placeholder UUIDs (for testing - replace with real ones):
+    'efcdab90-7856-3412-efcd-ab9078563412': 'BEACON_1',
     '00000002-0000-0000-0000-000000000002': 'BEACON_2',
     '00000003-0000-0000-0000-000000000003': 'BEACON_3',
   };
