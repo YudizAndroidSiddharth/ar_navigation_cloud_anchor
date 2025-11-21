@@ -3,85 +3,184 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
-/// BLE navigation helper service responsible only for orchestrating
-/// low-level scan operations and timers. All business logic lives
-/// inside the controller via callbacks.
+/// Simplified BLE Navigation Service for continuous scanning
+/// Optimized for production use without restart complexity
 class BleNavigationService {
   StreamSubscription<List<ScanResult>>? _scanSubscription;
-  Timer? _scanRestartTimer;
-  Timer? _deviceTimeoutTimer;
+  StreamSubscription<BluetoothAdapterState>? _adapterSubscription;
 
-  StreamSubscription<List<ScanResult>>? get scanSubscription =>
-      _scanSubscription;
+  bool _isScanning = false;
+  bool _isDisposed = false;
 
-  Timer? get scanRestartTimer => _scanRestartTimer;
-
-  Timer? get deviceTimeoutTimer => _deviceTimeoutTimer;
-
-  Future<void> startOptimizedBleScanning({
-    required bool permissionsGranted,
-    required Future<void> Function() ensurePermissions,
-    required Future<void> Function() ensureBluetoothEnabled,
-    required Duration scanRestartInterval,
-    required Duration timeoutTickInterval,
-    required void Function(List<ScanResult>) onScanResults,
-    required VoidCallback onRestart,
-    required VoidCallback onTimeoutTick,
+  /// Start continuous BLE scanning
+  /// No restart logic - keeps scanning until explicitly stopped
+  Future<void> startContinuousScanning({
+    required Function(List<ScanResult>) onScanResults,
+    required Function(String) onError,
+    required Function() onBluetoothStateChanged,
   }) async {
-    if (!permissionsGranted) {
-      await ensurePermissions();
+    if (_isDisposed) {
+      throw Exception('Service is disposed');
     }
 
-    final isSupported = await FlutterBluePlus.isSupported;
-    if (!isSupported) {
-      throw Exception('BLE not supported on this device');
+    try {
+      // Stop any existing scan
+      await stopScanning();
+
+      // Ensure Bluetooth is ready
+      await _ensureBluetoothReady();
+
+      debugPrint('🚀 Starting continuous BLE scanning');
+
+      // Start scan with no timeout (continuous)
+      await FlutterBluePlus.startScan(
+        timeout: null, // Continuous scanning
+        continuousUpdates: true, // Critical for real-time updates
+        continuousDivisor: 1, // Process all advertisements
+        oneByOne: false, // Deduplicated list mode
+        androidScanMode: AndroidScanMode.lowLatency,
+        androidUsesFineLocation: true,
+      );
+
+      // Listen to scan results
+      _scanSubscription = FlutterBluePlus.scanResults.listen(
+        onScanResults,
+        onError: (error) {
+          debugPrint('❌ BLE scan error: $error');
+          onError('BLE scan error: $error');
+        },
+      );
+
+      // Monitor Bluetooth adapter state
+      _adapterSubscription = FlutterBluePlus.adapterState.listen((state) {
+        if (state != BluetoothAdapterState.on) {
+          debugPrint('🔵 Bluetooth state changed: $state');
+          _isScanning = false;
+          onBluetoothStateChanged();
+        } else if (!_isScanning) {
+          // Restart scanning when Bluetooth comes back
+          _restartScanningInternal(onScanResults, onError);
+        }
+      });
+
+      _isScanning = true;
+      debugPrint('✅ Continuous BLE scanning started successfully');
+    } catch (e) {
+      debugPrint('❌ Failed to start BLE scanning: $e');
+      onError('Failed to start scanning: $e');
+      rethrow;
     }
-
-    await ensureBluetoothEnabled();
-    await _resetAndStartScanning(onScanResults);
-
-    _scanRestartTimer?.cancel();
-    _scanRestartTimer = Timer.periodic(scanRestartInterval, (
-      Timer timer,
-    ) async {
-      onRestart();
-      await _resetAndStartScanning(onScanResults);
-    });
-
-    _deviceTimeoutTimer?.cancel();
-    _deviceTimeoutTimer = Timer.periodic(
-      timeoutTickInterval,
-      (_) => onTimeoutTick(),
-    );
   }
 
-  Future<void> _resetAndStartScanning(
-    void Function(List<ScanResult>) onScanResults,
+  /// Internal restart method for Bluetooth recovery
+  Future<void> _restartScanningInternal(
+    Function(List<ScanResult>) onScanResults,
+    Function(String) onError,
   ) async {
-    await FlutterBluePlus.stopScan();
-    await Future.delayed(const Duration(milliseconds: 200));
+    if (_isDisposed) return;
 
-    await FlutterBluePlus.startScan(
-      timeout: null,
-      androidUsesFineLocation: true,
-    );
+    try {
+      debugPrint('🔄 Restarting BLE scanning after Bluetooth recovery');
 
-    await _scanSubscription?.cancel();
-    _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
-      if (results.isNotEmpty) {
-        onScanResults(results);
+      await FlutterBluePlus.startScan(
+        timeout: null,
+        continuousUpdates: true,
+        continuousDivisor: 1,
+        oneByOne: false,
+        androidScanMode: AndroidScanMode.lowLatency,
+        androidUsesFineLocation: true,
+      );
+
+      _isScanning = true;
+      debugPrint('✅ BLE scanning restarted successfully');
+    } catch (e) {
+      debugPrint('❌ Failed to restart BLE scanning: $e');
+      onError('Failed to restart scanning: $e');
+    }
+  }
+
+  /// Ensure Bluetooth is ready for scanning
+  Future<void> _ensureBluetoothReady() async {
+    final adapterState = await FlutterBluePlus.adapterState.first;
+
+    if (adapterState != BluetoothAdapterState.on) {
+      if (adapterState == BluetoothAdapterState.off) {
+        debugPrint('📱 Turning on Bluetooth...');
+        await FlutterBluePlus.turnOn();
       }
-    });
+
+      // Wait for Bluetooth to be ready (with timeout)
+      await FlutterBluePlus.adapterState
+          .where((state) => state == BluetoothAdapterState.on)
+          .first
+          .timeout(
+            const Duration(seconds: 10),
+            onTimeout: () =>
+                throw TimeoutException('Bluetooth did not turn on'),
+          );
+
+      debugPrint('✅ Bluetooth is ready');
+    }
   }
 
+  /// Stop scanning and cleanup
   Future<void> stopScanning() async {
-    await FlutterBluePlus.stopScan();
-    await _scanSubscription?.cancel();
-    _scanRestartTimer?.cancel();
-    _deviceTimeoutTimer?.cancel();
+    if (!_isScanning) return;
+
+    debugPrint('🛑 Stopping BLE scanning');
+
+    try {
+      await _scanSubscription?.cancel();
+      _scanSubscription = null;
+
+      await FlutterBluePlus.stopScan();
+      _isScanning = false;
+
+      debugPrint('✅ BLE scanning stopped');
+    } catch (e) {
+      debugPrint('⚠️ Error stopping BLE scan: $e');
+    }
   }
 
+  /// Check if currently scanning
+  bool get isScanning => _isScanning;
+
+  /// Check if service is disposed
+  bool get isDisposed => _isDisposed;
+
+  /// Get current Bluetooth adapter state
+  Future<BluetoothAdapterState> get bluetoothState async {
+    return await FlutterBluePlus.adapterState.first;
+  }
+
+  /// Dispose service and cleanup all resources
   Future<void> dispose() async {
+    if (_isDisposed) return;
+
+    debugPrint('🗑️ Disposing BLE navigation service');
+
+    _isDisposed = true;
+
     await stopScanning();
+    await _adapterSubscription?.cancel();
+    _adapterSubscription = null;
+
+    debugPrint('✅ BLE navigation service disposed');
+  }
+}
+
+/// Exception thrown when BLE operations fail
+class BleNavigationException implements Exception {
+  final String message;
+  final dynamic originalError;
+
+  const BleNavigationException(this.message, [this.originalError]);
+
+  @override
+  String toString() {
+    if (originalError != null) {
+      return 'BleNavigationException: $message (Original: $originalError)';
+    }
+    return 'BleNavigationException: $message';
   }
 }

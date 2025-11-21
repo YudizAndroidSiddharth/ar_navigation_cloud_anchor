@@ -30,13 +30,7 @@ class PocNavigationScreen extends GetView<PocNavigationController> {
       centerTitle: true,
       backgroundColor: Colors.transparent,
       elevation: 0,
-      actions: [
-        IconButton(
-          icon: const Icon(Icons.refresh),
-          tooltip: 'Restart BLE Scanning',
-          onPressed: controller.restartBleScanning,
-        ),
-      ],
+      actions: [],
     );
   }
 

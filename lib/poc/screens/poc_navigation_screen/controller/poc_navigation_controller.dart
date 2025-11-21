@@ -1,7 +1,8 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:geolocator/geolocator.dart';
@@ -12,414 +13,322 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../../../utiles/snackbar_utiles.dart';
 import '../../../models/ble_waypoint.dart';
 import '../../../models/saved_location.dart';
-import '../../../services/ble_navigation_service.dart';
 import '../../../services/filtered_location_service.dart';
 import '../../../services/gps_navigation_service.dart';
 import '../../../utils/geo_utils.dart';
 
+/// Production-ready POC Navigation Controller
+/// Optimized for continuous BLE scanning with smooth UI updates
 class PocNavigationController extends GetxController {
   PocNavigationController(this.target);
 
   final SavedLocation target;
 
-  // BLE / timing configuration
-  static const Duration _bleScanRestartInterval = Duration(seconds: 20);
-  static const Duration _bleDeviceTimeout = Duration(seconds: 6);
+  // BLE Configuration - Production optimized
+  static const Duration _deviceTimeout = Duration(seconds: 4);
+  static const double _rssiSmoothingFactor = 0.7;
+  static const int _rssiHistorySize = 5;
+  static const int _rssiOutlierThreshold = 12;
 
-  // Movement-aware RSSI smoothing
-  static const double _stationaryRssiSmoothingFactor = 0.25;
-  static const double _walkingRssiSmoothingFactor = 0.6;
-  static const double _runningRssiSmoothingFactor = 0.8;
+  // Waypoint Detection - Simplified & Reliable
+  static const double _waypointReachedThreshold = -70.0; // ~1-2m indoor range
+  static const int _requiredStableSamples = 5;
+  static const Duration _stateChangeCooldown = Duration(milliseconds: 500);
 
-  // RSSI history sizes
-  static const int _stationaryRssiHistorySize = 15;
-  static const int _walkingRssiHistorySize = 5;
-  static const int _runningRssiHistorySize = 3;
+  // GPS Configuration
+  static const double _gpsDestinationThreshold = 3.0;
+  static const double _signalFloor = 5.0; // Never show 0%
 
-  static const int _rssiOutlierThreshold = 20;
-
-  // GPS thresholds (meters) for final destination
-  static const double _stationaryGpsThreshold = 3.0;
-  static const double _walkingGpsThreshold = 2.5;
-  static const double _runningGpsThreshold = 4.0;
-
-  // Speed thresholds (m/s)
-  static const double _stationarySpeedThreshold = 0.3;
-  static const double _walkingSpeedThreshold = 2.0;
-  static const double _runningSpeedThreshold = 4.0;
-
-  // Realistic RSSI thresholds for PHONE-AS-BEACON
-  static const double _stationaryStrictRssi = -60.0; // ~1–2 m
-  static const double _walkingStrictRssi = -65.0; // ~2–3 m
-  static const double _runningStrictRssi = -67.0; // pass-by
-
+  // Services
   final FilteredLocationService _locationService = FilteredLocationService();
-  final BleNavigationService _bleService = BleNavigationService();
   final GpsNavigationService _gpsService = GpsNavigationService();
 
-  // Observable state (for UI)
-  final scanCycleCount = 0.obs;
+  // Core Observable State
   final totalDetections = 0.obs;
   final permissionsGranted = false.obs;
   final currentPosition = Rxn<LatLng>();
   final headingDegrees = Rxn<double>();
   final displayDistanceMeters = Rxn<double>();
   final hasShownSuccess = false.obs;
-  final activeSignals = <BleWaypoint>[].obs;
-  final completedWaypoints = 0.obs;
+  final isScanning = false.obs;
 
-  // Movement state
-  final currentSpeedMps = 0.0.obs;
-  final movementState = MovementState.stationary.obs;
-  final isApproachingBeacon = false.obs;
-
-  // Signal state
+  // BLE Signal State
   final RxMap<String, double> smoothedRssi = <String, double>{}.obs;
+  final RxMap<String, double> signalStrength = <String, double>{}.obs;
   final RxMap<String, double> signalQuality = <String, double>{}.obs;
   final RxMap<String, int> detectionCount = <String, int>{}.obs;
+  final RxMap<String, DateTime> lastSeen = <String, DateTime>{}.obs;
 
+  // Waypoint Management
+  final RxList<String> reachedWaypointHistory = <String>[].obs;
+  final completedWaypoints = 0.obs;
+  final RxBool isMovingBackward = false.obs;
+
+  // Internal State
   final Map<String, List<int>> _rssiHistory = {};
-  final Map<String, DateTime> _lastSeenTimestamp = {};
-  final Map<String, DateTime> _lastReachedTimestamp = {};
+  final Map<String, DateTime> _lastStateChange = {};
+  final Map<String, int> _stableSampleCount = {};
 
-  // 3 logical waypoints along the path
-  final List<BleWaypoint> _bleWaypoints = [
+  // Waypoint Configuration
+  final List<BleWaypoint> _waypoints = [
     BleWaypoint(id: 'BEACON_1', label: 'Entry Point', order: 1),
     BleWaypoint(id: 'BEACON_2', label: 'Midpoint', order: 2),
     BleWaypoint(id: 'BEACON_3', label: 'Destination', order: 3),
   ];
 
-  final Map<String, BleWaypoint> _beaconMap = {};
+  final Map<String, BleWaypoint> _waypointMap = {};
 
-  // Optional: map device MACs to waypoint IDs
+  // Beacon Device Mapping
   final Map<String, String> _deviceToWaypointMap = {
-    // 'AA:BB:CC:DD:EE:01': 'BEACON_1',
-    // 'AA:BB:CC:DD:EE:02': 'BEACON_2',
-    // 'AA:BB:CC:DD:EE:03': 'BEACON_3',
+    '6B:14:28:14:EF:C5': 'BEACON_1',
+    'BD:93:D8:1C:AF:30': 'BEACON_2',
+    'EC:B9:75:AB:22:23': 'BEACON_3',
   };
 
-  // Map real beacon UUIDs to waypoint IDs
-  // Format: UUID must be uppercase with dashes: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
-  // Supports: iBeacon (Apple) and AltBeacon formats
-  // To find your beacon UUID:
-  //   - Check your beacon manufacturer's app/configuration
-  //   - Use a BLE scanner app (like nRF Connect) to read the advertised UUID
-  //   - Look for the UUID in the iBeacon/AltBeacon manufacturer data
-  final Map<String, String> _beaconUuidMap = const {
-    // TODO: Replace these placeholder UUIDs with your REAL beacon UUIDs
-    // Example format (uncomment and replace with your actual UUIDs):
-    // 'B9407F30-F5F8-466E-AFF9-25556B57FE6D': 'BEACON_1', // Entry Point
-    // 'B9407F30-F5F8-466E-AFF9-25556B57FE6E': 'BEACON_2', // Midpoint
-    // 'B9407F30-F5F8-466E-AFF9-25556B57FE6F': 'BEACON_3', // Destination
+  // Scanning State
+  StreamSubscription<List<ScanResult>>? _scanSubscription;
+  Timer? _timeoutTimer;
+  Timer? _uiUpdateTimer;
 
-    // Placeholder UUIDs (for testing - replace with real ones):
-    'efcdab90-7856-3412-efcd-ab9078563412': 'BEACON_1',
-    '00000002-0000-0000-0000-000000000002': 'BEACON_2',
-    '00000003-0000-0000-0000-000000000003': 'BEACON_3',
-  };
-
-  LatLng? _startPosition;
-  double? _smoothedDistanceMeters;
-  int _stableBelowThresholdCount = 0;
-
+  // UI Update Workers
   Worker? _rssiWorker;
-  Worker? _signalWorker;
   Worker? _distanceWorker;
-  Worker? _movementWorker;
 
-  // GetX lifecycle -----------------------------------------------------------
+  double? _smoothedDistanceMeters;
+  int _stableGpsCount = 0;
 
   @override
   void onInit() {
     super.onInit();
-    _initializeBeaconMaps();
-    _setupWorkers();
+    _initializeWaypoints();
+    _setupUIWorkers();
   }
 
   @override
   void onReady() {
     super.onReady();
-    _checkPermissionsStatus().then((_) => _startTracking());
+    _checkPermissions().then((_) => _startNavigation());
   }
 
   @override
   void onClose() {
-    _rssiWorker?.dispose();
-    _signalWorker?.dispose();
-    _distanceWorker?.dispose();
-    _movementWorker?.dispose();
-    _bleService.dispose();
-    _gpsService.stop(locationService: _locationService);
-    WakelockPlus.disable();
+    _cleanup();
     super.onClose();
   }
 
-  // Movement helpers ---------------------------------------------------------
-
-  bool get isStationary => movementState.value == MovementState.stationary;
-  bool get isWalking => movementState.value == MovementState.walking;
-  bool get isRunning => movementState.value == MovementState.running;
-
-  MovementState _calculateMovementState(double speed) {
-    if (speed < _stationarySpeedThreshold) return MovementState.stationary;
-    if (speed < _walkingSpeedThreshold) return MovementState.walking;
-    return MovementState.running;
-  }
-
-  double _getCurrentSmoothingFactor() {
-    switch (movementState.value) {
-      case MovementState.stationary:
-        return _stationaryRssiSmoothingFactor;
-      case MovementState.walking:
-        return _walkingRssiSmoothingFactor;
-      case MovementState.running:
-        return _runningRssiSmoothingFactor;
+  /// Initialize waypoint mappings and state
+  void _initializeWaypoints() {
+    for (final waypoint in _waypoints) {
+      _waypointMap[waypoint.id] = waypoint;
+      _rssiHistory[waypoint.id] = [];
+      smoothedRssi[waypoint.id] = -100.0;
+      signalStrength[waypoint.id] = _signalFloor;
+      signalQuality[waypoint.id] = 0.0;
+      detectionCount[waypoint.id] = 0;
+      _stableSampleCount[waypoint.id] = 0;
     }
   }
 
-  int _getCurrentHistorySize() {
-    switch (movementState.value) {
-      case MovementState.stationary:
-        return _stationaryRssiHistorySize;
-      case MovementState.walking:
-        return _walkingRssiHistorySize;
-      case MovementState.running:
-        return _runningRssiHistorySize;
-    }
-  }
-
-  double _getCurrentStrictRssiThreshold() {
-    switch (movementState.value) {
-      case MovementState.stationary:
-        return _stationaryStrictRssi;
-      case MovementState.walking:
-        return _walkingStrictRssi;
-      case MovementState.running:
-        return _runningStrictRssi;
-    }
-  }
-
-  double _getCurrentGpsThreshold() {
-    switch (movementState.value) {
-      case MovementState.stationary:
-        return _stationaryGpsThreshold;
-      case MovementState.walking:
-        return _walkingGpsThreshold;
-      case MovementState.running:
-        return _runningGpsThreshold;
-    }
-  }
-
-  int _getMovementAwareStableSamples(String beaconId) {
-    switch (movementState.value) {
-      case MovementState.stationary:
-        final quality = signalQuality[beaconId] ?? 0.5;
-        if (quality > 0.8) return 2;
-        if (quality > 0.6) return 3;
-        return 5;
-
-      case MovementState.walking:
-        // walking – quick but not instant
-        return 2;
-
-      case MovementState.running:
-        // running / fast pass-by – a single strong hit
-        return 1;
-    }
-  }
-
-  int _getEnhancedDynamicThreshold(double smoothedRssi, String beaconId) {
-    final quality = signalQuality[beaconId] ?? 0.5;
-    final baseThreshold = _getCurrentStrictRssiThreshold();
-
-    if (isWalking || isRunning) {
-      if (quality > 0.85) return baseThreshold.round(); // e.g. -65
-      if (quality > 0.7) return (baseThreshold - 3).round(); // -68
-      return (baseThreshold - 6).round(); // -71
-    }
-
-    // Stationary: more conservative
-    if (quality > 0.8 && smoothedRssi >= -60) {
-      return -60;
-    } else if (quality > 0.6 && smoothedRssi >= -70) {
-      return -70;
-    } else {
-      return -80;
-    }
-  }
-
-  bool _validateEnhancedCriteria(String waypointId) {
-    final lastReached = _lastReachedTimestamp[waypointId];
-    if (lastReached != null &&
-        DateTime.now().difference(lastReached).inSeconds < 5) {
-      return false;
-    }
-
-    // Only reject obviously-car speeds
-    final speed = currentSpeedMps.value;
-    if (speed > 12.0) {
-      return false;
-    }
-
-    return true;
-  }
-
-  // GPS / heading updates ----------------------------------------------------
-
-  void _handlePositionUpdate(LatLng position) {
-    if (_startPosition == null) {
-      _startPosition = position;
-    }
-
-    final rawDistance = Geolocator.distanceBetween(
-      position.lat,
-      position.lng,
-      target.latitude,
-      target.longitude,
+  /// Setup optimized UI update workers
+  void _setupUIWorkers() {
+    // Debounced RSSI updates for smooth UI
+    _rssiWorker = debounce(
+      smoothedRssi,
+      (_) => _updateSignalDisplays(),
+      time: const Duration(milliseconds: 50),
     );
 
-    final speed = _locationService.currentSpeedMps ?? 0.0;
-    currentSpeedMps.value = speed;
+    _distanceWorker = ever<double?>(
+      displayDistanceMeters,
+      (_) => _checkDestinationReached(),
+    );
+  }
 
-    final newMovementState = _calculateMovementState(speed);
-    if (movementState.value != newMovementState) {
-      movementState.value = newMovementState;
-      debugPrint(
-        'Movement state changed: ${newMovementState.name} '
-        '(${speed.toStringAsFixed(1)} m/s)',
+  /// Start navigation with error handling
+  Future<void> _startNavigation() async {
+    try {
+      await _startGpsTracking();
+      await _startContinuousBleScanning();
+      await WakelockPlus.enable();
+    } catch (e) {
+      _handleError('Navigation start failed', e);
+    }
+  }
+
+  /// Start GPS tracking
+  Future<void> _startGpsTracking() async {
+    await _gpsService.startTracking(
+      locationService: _locationService,
+      onPosition: _handleGpsUpdate,
+      onHeading: _handleHeadingUpdate,
+    );
+  }
+
+  /// Start continuous BLE scanning (no restarts)
+  Future<void> _startContinuousBleScanning() async {
+    try {
+      await _ensureBluetoothReady();
+
+      // Stop any existing scan
+      if (_scanSubscription != null) {
+        await FlutterBluePlus.stopScan();
+        await _scanSubscription?.cancel();
+      }
+
+      debugPrint('🚀 Starting continuous BLE scanning');
+
+      // Start continuous scan with no timeout
+      await FlutterBluePlus.startScan(
+        timeout: null, // Continuous scanning
+        continuousUpdates: true, // Critical for real-time updates
+        continuousDivisor: 1, // Process all advertisements
+        oneByOne: false, // Deduplicated list mode
+        androidScanMode: AndroidScanMode.lowLatency, // Fastest scanning
+        androidUsesFineLocation: true,
       );
-    }
 
-    final adaptiveAlpha = _calculateAdaptiveAlpha(rawDistance);
-    if (_smoothedDistanceMeters == null) {
-      _smoothedDistanceMeters = rawDistance;
+      // Listen to scan results
+      _scanSubscription = FlutterBluePlus.scanResults.listen(
+        _processScanResults,
+        onError: (e) => _handleError('BLE scan error', e),
+      );
+
+      // Monitor adapter state
+      FlutterBluePlus.adapterState.listen((state) {
+        if (state != BluetoothAdapterState.on) {
+          _handleBluetoothStateChange(state);
+        }
+      });
+
+      // Start timeout monitoring for individual devices
+      _startTimeoutMonitoring();
+
+      isScanning.value = true;
+      debugPrint('✅ Continuous BLE scanning started successfully');
+    } catch (e) {
+      _handleError('Failed to start BLE scanning', e);
+    }
+  }
+
+  /// Ensure Bluetooth is ready
+  Future<void> _ensureBluetoothReady() async {
+    final adapterState = await FlutterBluePlus.adapterState.first;
+    if (adapterState != BluetoothAdapterState.on) {
+      if (adapterState == BluetoothAdapterState.off) {
+        await FlutterBluePlus.turnOn();
+      }
+
+      // Wait for Bluetooth to be ready
+      await FlutterBluePlus.adapterState
+          .where((state) => state == BluetoothAdapterState.on)
+          .first
+          .timeout(const Duration(seconds: 10));
+    }
+  }
+
+  /// Monitor Bluetooth state changes
+  void _handleBluetoothStateChange(BluetoothAdapterState state) {
+    debugPrint('🔵 Bluetooth state changed: $state');
+
+    if (state == BluetoothAdapterState.on) {
+      // Restart scanning when Bluetooth comes back
+      _startContinuousBleScanning();
     } else {
-      _smoothedDistanceMeters =
-          adaptiveAlpha * rawDistance +
-          (1 - adaptiveAlpha) * _smoothedDistanceMeters!;
+      isScanning.value = false;
+      SnackBarUtil.showErrorSnackbar('Bluetooth disconnected');
     }
-
-    currentPosition.value = position;
-    displayDistanceMeters.value = _smoothedDistanceMeters;
   }
 
-  void _handleHeadingUpdate(double? heading) {
-    headingDegrees.value = heading;
+  /// Start device timeout monitoring
+  void _startTimeoutMonitoring() {
+    _timeoutTimer?.cancel();
+    _timeoutTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      _handleDeviceTimeouts();
+    });
   }
 
-  double _calculateAdaptiveAlpha(double currentDistance) {
-    double baseAlpha = isWalking ? 0.3 : 0.2;
-    double maxAlpha = isWalking ? 0.6 : 0.4;
-
-    if (_smoothedDistanceMeters == null) return baseAlpha;
-
-    final distanceChange = (currentDistance - _smoothedDistanceMeters!).abs();
-    final changeFactor = (distanceChange / 10.0).clamp(0.0, 1.0);
-
-    return baseAlpha + (maxAlpha - baseAlpha) * changeFactor;
-  }
-
-  // BLE scan processing ------------------------------------------------------
-
-  void _processOptimizedBleScanResults(List<ScanResult> results) {
+  /// Process BLE scan results with optimized filtering
+  void _processScanResults(List<ScanResult> results) {
     if (results.isEmpty) return;
 
     final now = DateTime.now();
-    bool significantUpdate = false;
+    bool hasSignificantUpdate = false;
 
     for (final result in results) {
-      final device = result.device;
+      final waypointId = _matchDevice(result.device);
+      if (waypointId == null) continue;
+
       final rssi = result.rssi;
-      final adv = result.advertisementData;
+      lastSeen[waypointId] = now;
+      detectionCount[waypointId] = (detectionCount[waypointId] ?? 0) + 1;
 
-      final matchedId = _performEnhancedDeviceMatching(device, adv);
-      if (matchedId == null) continue;
+      // Process RSSI with enhanced filtering
+      final previousRssi = smoothedRssi[waypointId] ?? -100.0;
+      final newRssi = _processRssiWithFiltering(waypointId, rssi);
 
-      final waypoint = _beaconMap[matchedId];
-      if (waypoint == null) continue;
+      // Update signal metrics
+      _updateSignalMetrics(waypointId, rssi, newRssi);
 
-      _lastSeenTimestamp[matchedId] = now;
-      detectionCount[matchedId] = (detectionCount[matchedId] ?? 0) + 1;
-      detectionCount.refresh();
+      // Check for waypoint state changes
+      final stateChanged = _processWaypointDetection(waypointId, newRssi);
 
-      // ensure history exists
-      _rssiHistory.putIfAbsent(matchedId, () => []);
-      smoothedRssi.putIfAbsent(matchedId, () => -100.0);
-      signalQuality.putIfAbsent(matchedId, () => 0.0);
-      detectionCount.putIfAbsent(matchedId, () => 0);
-
-      final previousSmoothed = smoothedRssi[matchedId] ?? -100.0;
-
-      final newSmoothed = _processRssiWithMovementAwareFiltering(
-        matchedId,
-        rssi,
-      );
-
-      _updateSignalQuality(matchedId, rssi, newSmoothed);
-
-      final wasReached = waypoint.reached;
-      final threshold = _getEnhancedDynamicThreshold(newSmoothed, matchedId);
-      final stableSamples = _getMovementAwareStableSamples(matchedId);
-
-      final justReached = waypoint.updateRssi(
-        newSmoothed.round(),
-        threshold,
-        stableSamples,
-      );
-
-      if (justReached && !wasReached && _validateEnhancedCriteria(matchedId)) {
-        _lastReachedTimestamp[matchedId] = now;
-        significantUpdate = true;
-
-        completedWaypoints.value = _bleWaypoints.where((w) => w.reached).length;
-
-        final movementText = isWalking
-            ? ' (walking)'
-            : isRunning
-            ? ' (running)'
-            : '';
-        SnackBarUtil.showSuccessSnackbar(
-          'Reached ${waypoint.label}$movementText',
-        );
+      if (stateChanged || (newRssi - previousRssi).abs() > 2.0) {
+        hasSignificantUpdate = true;
       }
 
-      if ((newSmoothed - previousSmoothed).abs() >= 2.0 || justReached) {
-        significantUpdate = true;
-      }
-
-      smoothedRssi[matchedId] = newSmoothed;
-      smoothedRssi.refresh();
+      smoothedRssi[waypointId] = newRssi;
     }
 
     totalDetections.value += results.length;
 
-    if (significantUpdate) {
-      _recomputeActiveSignals();
+    if (hasSignificantUpdate) {
+      smoothedRssi.refresh();
     }
   }
 
-  double _processRssiWithMovementAwareFiltering(String beaconId, int rawRssi) {
-    final history = _rssiHistory[beaconId]!;
+  /// Match device to waypoint with logging
+  String? _matchDevice(BluetoothDevice device) {
+    final deviceId = device.remoteId.toString().toUpperCase();
+    final waypointId = _deviceToWaypointMap[deviceId];
 
-    final maxHistorySize = _getCurrentHistorySize();
+    if (waypointId != null) {
+      debugPrint('📱 Matched device: $deviceId -> $waypointId');
+    }
 
+    return waypointId;
+  }
+
+  /// Process RSSI with enhanced filtering and outlier removal
+  double _processRssiWithFiltering(String waypointId, int rawRssi) {
+    final history = _rssiHistory[waypointId]!;
+    final currentSmoothed = smoothedRssi[waypointId] ?? -100.0;
+
+    // Add to history
     history.add(rawRssi);
-    if (history.length > maxHistorySize) {
+    if (history.length > _rssiHistorySize) {
       history.removeAt(0);
     }
 
-    List<int> workingHistory = history;
-    if (history.length >= 3) {
-      workingHistory = _removeRssiOutliers(history);
+    // Handle significant signal jumps immediately
+    final signalJump = (rawRssi - currentSmoothed).abs();
+    if (signalJump > 15) {
+      debugPrint('⚡ Signal jump detected for $waypointId: ${signalJump}dBm');
+      return _rssiSmoothingFactor * rawRssi +
+          (1 - _rssiSmoothingFactor) * currentSmoothed;
     }
 
+    // Remove outliers if we have enough samples
+    final filteredHistory = history.length >= 3
+        ? _removeOutliers(history)
+        : history;
+
+    // Calculate weighted average favoring recent samples
     double weightedSum = 0.0;
     double weightSum = 0.0;
 
-    for (int i = 0; i < workingHistory.length; i++) {
-      final weightMultiplier = isWalking || isRunning ? 1.5 : 1.2;
-      final weight = math.pow(weightMultiplier, i).toDouble();
-      weightedSum += workingHistory[i] * weight;
+    for (int i = 0; i < filteredHistory.length; i++) {
+      final weight = math.pow(1.8, i).toDouble();
+      weightedSum += filteredHistory[i] * weight;
       weightSum += weight;
     }
 
@@ -427,215 +336,13 @@ class PocNavigationController extends GetxController {
         ? weightedSum / weightSum
         : rawRssi.toDouble();
 
-    final currentSmoothed = smoothedRssi[beaconId] ?? -100.0;
-    final smoothingFactor = _getCurrentSmoothingFactor();
-
-    return smoothingFactor * weightedAverage +
-        (1 - smoothingFactor) * currentSmoothed;
+    return _rssiSmoothingFactor * weightedAverage +
+        (1 - _rssiSmoothingFactor) * currentSmoothed;
   }
 
-  void _setupWorkers() {
-    _rssiWorker = debounce(
-      smoothedRssi,
-      (_) => _recomputeActiveSignals(),
-      time: const Duration(milliseconds: 60),
-    );
-
-    _signalWorker = ever(signalQuality, (_) => _recomputeActiveSignals());
-
-    _distanceWorker = ever<double?>(
-      displayDistanceMeters,
-      (_) => _checkReached(),
-    );
-
-    _movementWorker = ever(movementState, (_) {
-      debugPrint(
-        'Movement state: ${movementState.value.name} - '
-        'Speed: ${currentSpeedMps.value.toStringAsFixed(1)} m/s',
-      );
-    });
-  }
-
-  void _initializeBeaconMaps() {
-    for (final waypoint in _bleWaypoints) {
-      _beaconMap[waypoint.id] = waypoint;
-      _rssiHistory[waypoint.id] = [];
-      smoothedRssi[waypoint.id] = -100.0;
-      detectionCount[waypoint.id] = 0;
-      signalQuality[waypoint.id] = 0.0;
-    }
-  }
-
-  Future<void> _startTracking() async {
-    try {
-      await _gpsService.startTracking(
-        locationService: _locationService,
-        onPosition: _handlePositionUpdate,
-        onHeading: _handleHeadingUpdate,
-      );
-      await _startBleScanning();
-    } catch (e) {
-      SnackBarUtil.showErrorSnackbar('Navigation start failed: $e');
-    }
-  }
-
-  // Public API for screen ----------------------------------------------------
-
-  List<BleWaypoint> get orderedWaypoints =>
-      List<BleWaypoint>.from(_bleWaypoints)
-        ..sort((a, b) => a.order.compareTo(b.order));
-
-  bool get hasHeading => headingDegrees.value != null;
-
-  String get distanceText => displayDistanceMeters.value == null
-      ? 'Calculating...'
-      : '${displayDistanceMeters.value!.toStringAsFixed(1)} m away';
-
-  String get navigationInstructions {
-    final movementInfo = isWalking
-        ? ' (Walking detected)'
-        : isRunning
-        ? ' (Running detected)'
-        : '';
-    return hasHeading
-        ? 'Follow the vertical progress line to your destination.$movementInfo'
-        : 'Calibrating compass… move your phone in a figure-8.$movementInfo';
-  }
-
-  Future<void> _startBleScanning() async {
-    try {
-      await _bleService.startOptimizedBleScanning(
-        permissionsGranted: permissionsGranted.value,
-        ensurePermissions: _ensureBlePermissions,
-        ensureBluetoothEnabled: _ensureBluetoothEnabled,
-        scanRestartInterval: _bleScanRestartInterval,
-        timeoutTickInterval: const Duration(seconds: 2),
-        onScanResults: _processOptimizedBleScanResults,
-        onRestart: () => scanCycleCount.value++,
-        onTimeoutTick: _handleDeviceTimeout,
-      );
-      await WakelockPlus.enable();
-    } catch (e) {
-      SnackBarUtil.showErrorSnackbar('BLE scanning error: $e');
-    }
-  }
-
-  Future<void> restartBleScanning() async {
-    await _bleService.stopScanning();
-    await _startBleScanning();
-  }
-
-  Future<void> checkAndRequestPermissions() async {
-    await _ensureBlePermissions();
-  }
-
-  // Permissions / Bluetooth --------------------------------------------------
-
-  Future<void> _checkPermissionsStatus() async {
-    final permissionsList = _getRequiredPermissions();
-    bool allGranted = true;
-
-    for (final perm in permissionsList) {
-      final status = await perm.status;
-      if (!status.isGranted) {
-        allGranted = false;
-        break;
-      }
-    }
-
-    permissionsGranted.value = allGranted;
-  }
-
-  Future<void> _ensureBlePermissions() async {
-    final permissionsList = _getRequiredPermissions();
-    final denied = <Permission>[];
-
-    for (final permission in permissionsList) {
-      final status = await permission.status;
-      if (status.isGranted) continue;
-
-      final result = await permission.request();
-      if (!result.isGranted) {
-        denied.add(permission);
-      }
-    }
-
-    if (denied.isNotEmpty) {
-      final names = denied.map((p) => _getPermissionDisplayName(p)).join(', ');
-      SnackBarUtil.showErrorSnackbar('Permission denied: $names');
-
-      final shouldOpenSettings = await Get.dialog<bool>(
-        AlertDialog(
-          title: const Text('Permissions Required'),
-          content: Text(
-            'Please grant the following permissions to continue:\n\n$names',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Get.back(result: false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Get.back(result: true),
-              child: const Text('Open Settings'),
-            ),
-          ],
-        ),
-      );
-
-      if (shouldOpenSettings == true) {
-        await openAppSettings();
-        await Future.delayed(const Duration(milliseconds: 500));
-        await _checkPermissionsStatus();
-      }
-    } else {
-      permissionsGranted.value = true;
-    }
-  }
-
-  Future<void> _ensureBluetoothEnabled() async {
-    final adapterState = await FlutterBluePlus.adapterState.first;
-    if (adapterState != BluetoothAdapterState.on) {
-      await FlutterBluePlus.turnOn();
-      await FlutterBluePlus.adapterState
-          .where((state) => state == BluetoothAdapterState.on)
-          .first
-          .timeout(const Duration(seconds: 15));
-    }
-  }
-
-  List<Permission> _getRequiredPermissions() {
-    final permissions = <Permission>[
-      Permission.location,
-      Permission.locationWhenInUse,
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-      if (Platform.isAndroid) Permission.bluetooth,
-    ];
-    return permissions.where((p) => p.value != 21).toList();
-  }
-
-  String _getPermissionDisplayName(Permission permission) {
-    switch (permission) {
-      case Permission.location:
-        return 'Location';
-      case Permission.locationWhenInUse:
-        return 'Location (When in use)';
-      case Permission.bluetoothScan:
-        return 'Bluetooth Scan';
-      case Permission.bluetoothConnect:
-        return 'Bluetooth Connect';
-      case Permission.bluetooth:
-        return 'Bluetooth';
-      default:
-        return permission.value.toString();
-    }
-  }
-
-  // Signal quality & helpers -------------------------------------------------
-
-  List<int> _removeRssiOutliers(List<int> readings) {
-    if (readings.length < 5) return readings;
+  /// Remove RSSI outliers using median filtering
+  List<int> _removeOutliers(List<int> readings) {
+    if (readings.length < 3) return readings;
 
     final sorted = List<int>.from(readings)..sort();
     final median = sorted[sorted.length ~/ 2];
@@ -645,210 +352,267 @@ class PocNavigationController extends GetxController {
         .toList();
   }
 
-  void _updateSignalQuality(String beaconId, int rawRssi, double smoothed) {
-    final history = _rssiHistory[beaconId]!;
+  /// Update signal metrics (strength and quality)
+  void _updateSignalMetrics(
+    String waypointId,
+    int rawRssi,
+    double smoothedRssi,
+  ) {
+    // Update signal strength with floor
+    final strengthPercent = _calculateSignalStrength(smoothedRssi);
+    final currentStrength = signalStrength[waypointId] ?? _signalFloor;
 
-    if (history.length < 3) {
-      signalQuality[beaconId] = 0.3;
-      signalQuality.refresh();
+    // Smooth strength updates
+    final newStrength = math.max(
+      _signalFloor,
+      0.6 * strengthPercent + 0.4 * currentStrength,
+    );
+    signalStrength[waypointId] = newStrength;
+
+    // Update signal quality based on consistency
+    _updateSignalQuality(waypointId, smoothedRssi);
+  }
+
+  /// Calculate signal strength percentage from RSSI
+  double _calculateSignalStrength(double rssi) {
+    const minRssi = -100.0;
+    const maxRssi = -60.0;
+    return math.max(
+      _signalFloor,
+      ((rssi - minRssi) / (maxRssi - minRssi) * 100).clamp(0.0, 100.0),
+    );
+  }
+
+  /// Update signal quality based on consistency
+  void _updateSignalQuality(String waypointId, double smoothedRssi) {
+    final history = _rssiHistory[waypointId]!;
+    if (history.length < 2) {
+      signalQuality[waypointId] = 0.3;
       return;
     }
 
-    final variance = _calculateRssiVariance(history);
-    final consistencyScore = math.max(0.0, 1.0 - (variance / 400.0));
-    final strengthScore = _calculateStrengthScore(smoothed);
-    final detection = detectionCount[beaconId] ?? 0;
-    final frequencyScore = math.min(1.0, detection / 20.0);
+    // Calculate variance for consistency score
+    final mean = history.reduce((a, b) => a + b) / history.length;
+    final variance =
+        history
+            .map((rssi) => math.pow(rssi - mean, 2))
+            .reduce((a, b) => a + b) /
+        history.length;
 
-    final qualityScore =
+    final consistencyScore = math.max(0.0, 1.0 - (variance / 200.0));
+    final strengthScore = _calculateSignalStrength(smoothedRssi) / 100.0;
+    final detections = detectionCount[waypointId] ?? 0;
+    final frequencyScore = math.min(1.0, detections / 10.0);
+
+    final quality =
         (consistencyScore * 0.4 + strengthScore * 0.4 + frequencyScore * 0.2)
             .clamp(0.0, 1.0);
 
-    signalQuality[beaconId] = qualityScore;
-    signalQuality.refresh();
+    signalQuality[waypointId] = quality;
   }
 
-  double _calculateRssiVariance(List<int> readings) {
-    if (readings.length < 2) return 0.0;
+  /// Process waypoint detection with stable sampling
+  bool _processWaypointDetection(String waypointId, double rssi) {
+    final waypoint = _waypointMap[waypointId]!;
+    final now = DateTime.now();
 
-    final mean = readings.reduce((a, b) => a + b) / readings.length;
-    final variance =
-        readings
-            .map((rssi) => math.pow(rssi - mean, 2))
-            .reduce((a, b) => a + b) /
-        readings.length;
-    return variance.toDouble();
-  }
-
-  double _calculateStrengthScore(double rssi) {
-    const minRssi = -100.0;
-    const maxRssi = -30.0;
-    return ((rssi - minRssi) / (maxRssi - minRssi)).clamp(0.0, 1.0);
-  }
-
-  // Device ↔ waypoint matching -----------------------------------------------
-
-  String? _performEnhancedDeviceMatching(
-    BluetoothDevice device,
-    AdvertisementData adv,
-  ) {
-    if (_deviceToWaypointMap.isNotEmpty) {
-      final deviceId = device.remoteId.toString();
-      final matched = _deviceToWaypointMap[deviceId];
-      if (matched != null) return matched;
+    // Check cooldown period
+    final lastChange = _lastStateChange[waypointId];
+    if (lastChange != null &&
+        now.difference(lastChange) < _stateChangeCooldown) {
+      return false;
     }
 
-    final extractedUuid = _extractBeaconUuid(adv);
-    if (extractedUuid != null && _beaconUuidMap.containsKey(extractedUuid)) {
-      return _beaconUuidMap[extractedUuid];
-    }
+    final meetsThreshold = rssi >= _waypointReachedThreshold;
+    final currentCount = _stableSampleCount[waypointId] ?? 0;
 
-    if (device.platformName.isNotEmpty) {
-      final nameUpper = device.platformName.toUpperCase();
-      for (var waypoint in _bleWaypoints) {
-        if (nameUpper.contains(waypoint.id) ||
-            nameUpper.contains('BEACON') ||
-            nameUpper.contains('WAYPOINT') ||
-            nameUpper.contains(
-              waypoint.label.toUpperCase().replaceAll(' ', ''),
-            )) {
-          return waypoint.id;
-        }
-      }
-    }
+    if (meetsThreshold) {
+      _stableSampleCount[waypointId] = currentCount + 1;
 
-    for (var serviceUuid in adv.serviceUuids) {
-      final uuidStr = serviceUuid.toString().toUpperCase();
-      for (var entry in _beaconUuidMap.entries) {
-        if (uuidStr.contains(entry.key.replaceAll('-', ''))) {
-          return entry.value;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  String? _extractBeaconUuid(AdvertisementData adv) {
-    // Apple iBeacon
-    if (adv.manufacturerData.containsKey(0x004C)) {
-      final data = adv.manufacturerData[0x004C]!;
-      if (data.length >= 18 && data[0] == 0x02 && data[1] == 0x15) {
-        return _formatUuidFromBytes(data.sublist(2, 18));
-      }
-    }
-
-    // Generic / AltBeacon
-    for (final data in adv.manufacturerData.values) {
-      if (data.length >= 18 && data[0] == 0xBE && data[1] == 0xAC) {
-        return _formatUuidFromBytes(data.sublist(2, 18));
-      }
-    }
-
-    return null;
-  }
-
-  String _formatUuidFromBytes(List<int> uuidBytes) {
-    final hex = uuidBytes
-        .map((b) => b.toRadixString(16).padLeft(2, '0'))
-        .join('');
-    return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
-            '${hex.substring(12, 16)}-${hex.substring(16, 20)}-'
-            '${hex.substring(20)}'
-        .toUpperCase();
-  }
-
-  // Timeout / active signals -------------------------------------------------
-
-  void _handleDeviceTimeout() {
-    final expiredThreshold = DateTime.now().subtract(_bleDeviceTimeout);
-
-    _lastSeenTimestamp.removeWhere((id, lastSeen) {
-      if (lastSeen.isBefore(expiredThreshold)) {
-        smoothedRssi[id] = -100.0;
-        signalQuality[id] = 0.0;
-        detectionCount[id] = 0;
-        _rssiHistory[id]?.clear();
-
-        final waypoint = _beaconMap[id];
-        waypoint?.reset();
+      if (currentCount + 1 >= _requiredStableSamples && !waypoint.reached) {
+        _handleWaypointReached(waypointId, now);
         return true;
       }
-      return false;
+    } else {
+      // Gentle reset - don't immediately drop to 0
+      _stableSampleCount[waypointId] = math.max(0, currentCount - 1);
+    }
+
+    return false;
+  }
+
+  /// Handle waypoint reached with bidirectional logic
+  void _handleWaypointReached(String waypointId, DateTime timestamp) {
+    final waypoint = _waypointMap[waypointId]!;
+    _lastStateChange[waypointId] = timestamp;
+
+    _updateWaypointProgression(waypointId);
+
+    final direction = isMovingBackward.value ? 'LEFT' : 'REACHED';
+    final emoji = isMovingBackward.value ? '⬅️' : '✅';
+
+    SnackBarUtil.showSuccessSnackbar('$emoji $direction ${waypoint.label}');
+
+    debugPrint('🎯 WAYPOINT $direction: ${waypoint.label}');
+    debugPrint('   RSSI: ${smoothedRssi[waypointId]?.toStringAsFixed(1)}dBm');
+    debugPrint(
+      '   Strength: ${signalStrength[waypointId]?.toStringAsFixed(1)}%',
+    );
+  }
+
+  /// Update waypoint progression with bidirectional support
+  void _updateWaypointProgression(String currentWaypointId) {
+    final currentWaypoint = _waypointMap[currentWaypointId]!;
+
+    if (reachedWaypointHistory.isEmpty) {
+      // First waypoint reached
+      reachedWaypointHistory.add(currentWaypointId);
+      currentWaypoint.reached = true;
+      isMovingBackward.value = false;
+    } else {
+      final lastReachedId = reachedWaypointHistory.last;
+      final lastWaypoint = _waypointMap[lastReachedId]!;
+
+      if (currentWaypoint.order == lastWaypoint.order + 1) {
+        // Moving forward
+        reachedWaypointHistory.add(currentWaypointId);
+        currentWaypoint.reached = true;
+        isMovingBackward.value = false;
+      } else if (currentWaypoint.order == lastWaypoint.order - 1) {
+        // Moving backward
+        if (reachedWaypointHistory.isNotEmpty) {
+          final removedId = reachedWaypointHistory.removeLast();
+          final removedWaypoint = _waypointMap[removedId]!;
+          removedWaypoint.reached = false;
+          removedWaypoint.reset();
+        }
+        isMovingBackward.value = true;
+      } else if (currentWaypointId != lastReachedId) {
+        // Jump to non-adjacent waypoint
+        _handleWaypointJump(currentWaypointId);
+      }
+    }
+
+    completedWaypoints.value = reachedWaypointHistory.length;
+  }
+
+  /// Handle waypoint jump (rebuild progression)
+  void _handleWaypointJump(String waypointId) {
+    final waypoint = _waypointMap[waypointId]!;
+
+    reachedWaypointHistory.clear();
+
+    // Mark all waypoints up to current as reached
+    for (final wp in _waypoints) {
+      if (wp.order <= waypoint.order) {
+        wp.reached = true;
+        reachedWaypointHistory.add(wp.id);
+      } else {
+        wp.reached = false;
+        wp.reset();
+      }
+    }
+
+    isMovingBackward.value = false;
+    debugPrint('🔄 Jump detected - rebuilt sequence to ${waypoint.label}');
+  }
+
+  /// Handle device timeouts with graceful degradation
+  void _handleDeviceTimeouts() {
+    final expiredThreshold = DateTime.now().subtract(_deviceTimeout);
+
+    lastSeen.forEach((waypointId, lastSeenTime) {
+      if (lastSeenTime.isBefore(expiredThreshold)) {
+        // Gradual signal degradation instead of hard reset
+        final currentStrength = signalStrength[waypointId] ?? _signalFloor;
+        final newStrength = math.max(_signalFloor, currentStrength * 0.90);
+
+        signalStrength[waypointId] = newStrength;
+        signalQuality[waypointId] = 0.0;
+
+        // Only reset RSSI, keep some signal strength
+        smoothedRssi[waypointId] = -100.0;
+        _stableSampleCount[waypointId] = 0;
+
+        debugPrint('⏰ Timeout for $waypointId - graceful degradation');
+      }
     });
 
+    // Refresh UI if any changes occurred
+    signalStrength.refresh();
     smoothedRssi.refresh();
-    signalQuality.refresh();
-    detectionCount.refresh();
-    _recomputeActiveSignals();
   }
 
-  void _recomputeActiveSignals() {
-    final filtered =
-        _bleWaypoints.where((waypoint) {
-          final rssi = smoothedRssi[waypoint.id] ?? -100.0;
-          final quality = signalQuality[waypoint.id] ?? 0.0;
-          return rssi > -95.0 && quality > 0.1;
-        }).toList()..sort((a, b) {
-          final rssiA = smoothedRssi[a.id] ?? -100.0;
-          final rssiB = smoothedRssi[b.id] ?? -100.0;
-          final qualityA = signalQuality[a.id] ?? 0.0;
-          final qualityB = signalQuality[b.id] ?? 0.0;
-          final scoreA = rssiA * (0.7 + qualityA * 0.3);
-          final scoreB = rssiB * (0.7 + qualityB * 0.3);
-          return scoreB.compareTo(scoreA);
-        });
-
-    activeSignals.assignAll(filtered);
-    completedWaypoints.value = _bleWaypoints.where((w) => w.reached).length;
+  /// Update signal displays for UI
+  void _updateSignalDisplays() {
+    // This method is called by the debounced worker
+    // Signals are already updated, just trigger UI refresh
+    signalStrength.refresh();
   }
 
-  // Destination (GPS-based) success check -----------------------------------
+  /// Handle GPS position updates
+  void _handleGpsUpdate(LatLng position) {
+    currentPosition.value = position;
 
-  void _checkReached() {
+    final rawDistance = Geolocator.distanceBetween(
+      position.lat,
+      position.lng,
+      target.latitude,
+      target.longitude,
+    );
+
+    // Smooth distance updates
+    if (_smoothedDistanceMeters == null) {
+      _smoothedDistanceMeters = rawDistance;
+    } else {
+      _smoothedDistanceMeters =
+          0.4 * rawDistance + 0.6 * _smoothedDistanceMeters!;
+    }
+
+    displayDistanceMeters.value = _smoothedDistanceMeters;
+  }
+
+  /// Handle compass heading updates
+  void _handleHeadingUpdate(double? heading) {
+    headingDegrees.value = heading;
+  }
+
+  /// Check if destination is reached via GPS
+  void _checkDestinationReached() {
     if (hasShownSuccess.value) return;
 
     final distance = displayDistanceMeters.value;
     if (distance == null) return;
 
-    final threshold = _getCurrentGpsThreshold();
-    if (distance <= threshold) {
-      _stableBelowThresholdCount++;
+    if (distance <= _gpsDestinationThreshold) {
+      _stableGpsCount++;
     } else {
-      _stableBelowThresholdCount = 0;
+      _stableGpsCount = 0;
     }
 
-    final requiredSamples = isWalking || isRunning ? 2 : 3;
-
-    if (_stableBelowThresholdCount >= requiredSamples) {
-      _showSuccessDialog();
+    if (_stableGpsCount >= 3) {
+      _showDestinationReachedDialog();
     }
   }
 
-  void _showSuccessDialog() {
+  /// Show destination reached dialog
+  void _showDestinationReachedDialog() {
     if (hasShownSuccess.value) return;
     hasShownSuccess.value = true;
 
-    final movementText = isWalking
-        ? ' while walking'
-        : isRunning
-        ? ' while running'
-        : '';
-
     Get.defaultDialog(
-      title: '🎉 Success!',
+      title: '🎉 Destination Reached!',
       barrierDismissible: false,
       content: Column(
         children: [
-          Text('You have reached "${target.name}"$movementText.'),
-          const SizedBox(height: 8),
+          Text('You have successfully navigated to "${target.name}".'),
+          const SizedBox(height: 12),
           Text(
-            'Completed waypoints: ${completedWaypoints.value}/${_bleWaypoints.length}',
-            style: const TextStyle(color: Colors.grey),
-          ),
-          Text(
-            'Final speed: ${currentSpeedMps.value.toStringAsFixed(1)} m/s',
-            style: const TextStyle(color: Colors.grey, fontSize: 12),
+            'Waypoints completed: ${completedWaypoints.value}/${_waypoints.length}',
+            style: const TextStyle(
+              color: Colors.grey,
+              fontWeight: FontWeight.w500,
+            ),
           ),
         ],
       ),
@@ -857,82 +621,88 @@ class PocNavigationController extends GetxController {
           Get.back();
           Get.back();
         },
-        child: const Text('OK'),
+        child: const Text('Complete'),
       ),
     );
   }
 
-  // UI helper methods for widgets -------------------------------------------
+  /// Check and request permissions
+  Future<void> _checkPermissions() async {
+    final permissions = [
+      Permission.location,
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+    ];
 
-  List<BleWaypoint> get sortedActiveSignals =>
-      List<BleWaypoint>.from(activeSignals);
+    final denied = <Permission>[];
 
-  int signalPercentFor(String waypointId) {
-    final rssi = smoothedRssi[waypointId] ?? -100;
-    return _calculateEnhancedSignalPercent(rssi);
+    for (final permission in permissions) {
+      final status = await permission.request();
+      if (!status.isGranted) {
+        denied.add(permission);
+      }
+    }
+
+    if (denied.isEmpty) {
+      permissionsGranted.value = true;
+    } else {
+      _handlePermissionDenied(denied);
+    }
   }
 
-  String signalDistanceFor(String waypointId) {
-    final rssi = smoothedRssi[waypointId] ?? -100;
-    return _calculatePreciseDistance(rssi);
+  /// Handle permission denied
+  void _handlePermissionDenied(List<Permission> denied) {
+    final names = denied.map((p) => p.toString().split('.').last).join(', ');
+    SnackBarUtil.showErrorSnackbar('Permissions required: $names');
+
+    Get.defaultDialog(
+      title: 'Permissions Required',
+      content: Text('Please grant: $names'),
+      confirm: TextButton(
+        onPressed: () {
+          Get.back();
+          openAppSettings();
+        },
+        child: const Text('Settings'),
+      ),
+    );
   }
 
-  String signalQualityLabelFor(String waypointId) {
-    final quality = signalQuality[waypointId] ?? 0.0;
-    return _getSignalQualityLabel(quality);
+  /// Handle errors with logging
+  void _handleError(String message, dynamic error) {
+    debugPrint('❌ $message: $error');
+    SnackBarUtil.showErrorSnackbar('$message: $error');
   }
 
-  Color signalColorFor(String waypointId) {
-    final rssi = smoothedRssi[waypointId] ?? -100;
-    final quality = signalQuality[waypointId] ?? 0.0;
-    return _getEnhancedSignalColor(rssi, quality);
+  /// Cleanup resources
+  void _cleanup() {
+    _scanSubscription?.cancel();
+    _timeoutTimer?.cancel();
+    _uiUpdateTimer?.cancel();
+    _rssiWorker?.dispose();
+    _distanceWorker?.dispose();
+
+    FlutterBluePlus.stopScan().catchError((e) {
+      debugPrint('Error stopping scan: $e');
+    });
+
+    _gpsService.stop(locationService: _locationService);
+    WakelockPlus.disable();
+
+    isScanning.value = false;
   }
 
-  int _calculateEnhancedSignalPercent(double rssi) {
-    const minRssi = -100.0;
-    const maxRssi = -30.0;
+  // Public API for UI
 
-    final normalized = ((rssi - minRssi) / (maxRssi - minRssi)).clamp(0.0, 1.0);
-    final enhanced =
-        math.pow(normalized, isWalking || isRunning ? 0.7 : 0.6) as double;
-    return (enhanced * 100).round().clamp(0, 100);
-  }
+  /// Get ordered waypoints for display
+  List<BleWaypoint> get orderedWaypoints =>
+      List<BleWaypoint>.from(_waypoints)
+        ..sort((a, b) => a.order.compareTo(b.order));
 
-  String _calculatePreciseDistance(double rssi) {
-    const txPower = -59.0;
-    final pathLossExponent = isWalking || isRunning ? 2.2 : 2.4;
+  /// Check if compass heading is available
+  bool get hasHeading => headingDegrees.value != null;
 
-    if (rssi >= -30) return '< 30 cm';
-
-    final distance =
-        math.pow(10, (txPower - rssi) / (10 * pathLossExponent)) as double;
-
-    if (distance < 0.5) return '≈ ${(distance * 100).round()} cm';
-    if (distance < 1.0) return '≈ ${(distance * 100).round()} cm';
-    if (distance < 5.0) return '≈ ${distance.toStringAsFixed(1)} m';
-    if (distance < 20.0) return '≈ ${distance.toStringAsFixed(0)} m';
-    return '> 20 m';
-  }
-
-  String _getSignalQualityLabel(double quality) {
-    if (quality >= 0.9) return 'Excellent Signal';
-    if (quality >= 0.75) return 'Very Good Signal';
-    if (quality >= 0.6) return 'Good Signal';
-    if (quality >= 0.4) return 'Fair Signal';
-    if (quality >= 0.2) return 'Weak Signal';
-    return 'Poor Signal';
-  }
-
-  Color _getEnhancedSignalColor(double rssi, double quality) {
-    final combinedScore = (rssi + 100) / 70 * 0.7 + quality * 0.3;
-
-    if (combinedScore >= 0.8) return Colors.green;
-    if (combinedScore >= 0.6) return Colors.lightGreen;
-    if (combinedScore >= 0.4) return Colors.orange;
-    if (combinedScore >= 0.2) return Colors.deepOrange;
-    return Colors.red;
-  }
-
+  /// Get navigation arrow rotation
   double get navigationArrowRadians {
     final position = currentPosition.value;
     final heading = headingDegrees.value;
@@ -944,12 +714,52 @@ class PocNavigationController extends GetxController {
       target.latitude,
       target.longitude,
     );
-
     final relativeDeg = (bearing - heading + 360.0) % 360.0;
     return relativeDeg * (math.pi / 180.0);
   }
 
-  // *** Progress-line helper for VerticalProgressLine widget ***
+  /// Get distance text for display
+  String get distanceText => displayDistanceMeters.value == null
+      ? 'Calculating...'
+      : '${displayDistanceMeters.value!.toStringAsFixed(1)} m away';
+
+  /// Get navigation instructions
+  String get navigationInstructions {
+    final directionInfo = isMovingBackward.value ? ' - Moving backward ⬅️' : '';
+    return hasHeading
+        ? 'Follow the arrow to your destination.$directionInfo'
+        : 'Calibrate compass by moving phone in figure-8.$directionInfo';
+  }
+
+  /// Get signal percentage for waypoint
+  int signalPercentFor(String waypointId) {
+    return (signalStrength[waypointId] ?? _signalFloor).round().clamp(0, 100);
+  }
+
+  /// Get signal quality label
+  String signalQualityLabelFor(String waypointId) {
+    final quality = signalQuality[waypointId] ?? 0.0;
+    if (quality >= 0.8) return 'Excellent';
+    if (quality >= 0.6) return 'Very Good';
+    if (quality >= 0.4) return 'Good';
+    if (quality >= 0.2) return 'Fair';
+    return 'Weak';
+  }
+
+  /// Get signal color for UI
+  Color signalColorFor(String waypointId) {
+    final waypoint = _waypointMap[waypointId];
+    if (waypoint?.reached == true) return Colors.green;
+
+    final strength = signalStrength[waypointId] ?? _signalFloor;
+    if (strength >= 80) return Colors.green;
+    if (strength >= 60) return Colors.lightGreen;
+    if (strength >= 40) return Colors.orange;
+    if (strength >= 20) return Colors.deepOrange;
+    return Colors.red;
+  }
+
+  /// Calculate user position on progress line
   UserProgressPosition calculateUserPositionOnLineReversed({
     required List<BleWaypoint> sortedWaypoints,
     required double lineHeight,
@@ -959,50 +769,39 @@ class PocNavigationController extends GetxController {
       return const UserProgressPosition(currentY: 0, completedHeight: 0);
     }
 
-    // find last reached waypoint index
-    int lastReachedIndex = -1;
-    for (int i = 0; i < sortedWaypoints.length; i++) {
-      if (sortedWaypoints[i].reached) {
-        lastReachedIndex = i;
-      }
-    }
+    final lastReachedIndex = reachedWaypointHistory.isEmpty
+        ? -1
+        : sortedWaypoints.indexWhere(
+            (w) => w.id == reachedWaypointHistory.last,
+          );
 
     final segmentHeight = lineHeight / (sortedWaypoints.length + 1);
 
     double completedHeight = 0.0;
     if (lastReachedIndex >= 0) {
-      final reversedVisualIndex = sortedWaypoints.length - 1 - lastReachedIndex;
-      completedHeight = segmentHeight * (reversedVisualIndex + 1);
+      final reversedIndex = sortedWaypoints.length - 1 - lastReachedIndex;
+      completedHeight = segmentHeight * (reversedIndex + 1);
     }
 
     double currentY;
     if (lastReachedIndex == sortedWaypoints.length - 1) {
-      // all reached: user at top
       currentY = lineTop;
     } else if (lastReachedIndex < 0) {
-      // none reached: user at bottom
       currentY = lineTop + lineHeight;
     } else {
-      // between last reached and next waypoint
-      final nextWaypointIndex = lastReachedIndex + 1;
-      final nextWaypoint = sortedWaypoints[nextWaypointIndex];
-      final smoothed = smoothedRssi[nextWaypoint.id] ?? -100.0;
+      final nextIndex = lastReachedIndex + 1;
+      final nextWaypoint = sortedWaypoints[nextIndex];
 
-      // movement-aware RSSI range for UI progress
-      final minRssi = -100.0;
-      final maxRssi = isWalking || isRunning ? -40.0 : -50.0;
-      final progress = ((smoothed - minRssi) / (maxRssi - minRssi)).clamp(
-        0.0,
-        1.0,
-      );
+      final progress = ((signalStrength[nextWaypoint.id] ?? _signalFloor) / 100)
+          .clamp(0.0, 1.0);
 
       final reversedLastIndex = sortedWaypoints.length - 1 - lastReachedIndex;
-      final reversedNextIndex = sortedWaypoints.length - 1 - nextWaypointIndex;
+      final reversedNextIndex = sortedWaypoints.length - 1 - nextIndex;
 
-      final lastReachedY = lineTop + segmentHeight * (reversedLastIndex + 1);
-      final nextWaypointY = lineTop + segmentHeight * (reversedNextIndex + 1);
+      final lastY = lineTop + segmentHeight * (reversedLastIndex + 1);
+      final nextY = lineTop + segmentHeight * (reversedNextIndex + 1);
 
-      currentY = lastReachedY + (nextWaypointY - lastReachedY) * progress;
+      currentY = lastY + (nextY - lastY) * progress;
     }
 
     return UserProgressPosition(
@@ -1010,27 +809,17 @@ class PocNavigationController extends GetxController {
       completedHeight: completedHeight,
     );
   }
-}
 
-// Movement state enum & extension -------------------------------------------
-
-enum MovementState { stationary, walking, running }
-
-extension MovementStateExtension on MovementState {
-  String get name {
-    switch (this) {
-      case MovementState.stationary:
-        return 'Stationary';
-      case MovementState.walking:
-        return 'Walking';
-      case MovementState.running:
-        return 'Running';
-    }
+  /// Public method to restart scanning if needed
+  Future<void> restartScanning() async {
+    debugPrint('🔄 Manual scan restart requested');
+    _cleanup();
+    await Future.delayed(const Duration(milliseconds: 500));
+    await _startContinuousBleScanning();
   }
 }
 
-// Small DTO for VerticalProgressLine ----------------------------------------
-
+/// User position data class
 class UserProgressPosition {
   final double currentY;
   final double completedHeight;

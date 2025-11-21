@@ -2,10 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../../../models/ble_waypoint.dart';
-import '../controller/poc_navigation_controller.dart';
 
 class SignalAnalyticsCard extends StatelessWidget {
-  final PocNavigationController controller;
+  final controller;
 
   const SignalAnalyticsCard({super.key, required this.controller});
 
@@ -17,7 +16,7 @@ class SignalAnalyticsCard extends StatelessWidget {
         return _buildPermissionCard(theme);
       }
 
-      final signals = controller.sortedActiveSignals;
+      final signals = _getActiveSignals();
       if (signals.isEmpty) {
         return _buildNoSignalCard(theme);
       }
@@ -25,7 +24,7 @@ class SignalAnalyticsCard extends StatelessWidget {
       final strongest = signals.first;
       final color = controller.signalColorFor(strongest.id);
       final percent = controller.signalPercentFor(strongest.id);
-      final distance = controller.signalDistanceFor(strongest.id);
+      final distance = _getSignalDistance(strongest.id);
       final qualityLabel = controller.signalQualityLabelFor(strongest.id);
 
       return Card(
@@ -38,10 +37,10 @@ class SignalAnalyticsCard extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Icon(Icons.bluetooth_connected, color: color, size: 24),
+                  Icon(Icons.bluetooth, color: color, size: 24),
                   const SizedBox(width: 8),
                   Text(
-                    'Beacon Signal Analytics',
+                    'Continuous BLE Analytics ⚡',
                     style: theme.textTheme.titleMedium?.copyWith(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
@@ -70,6 +69,15 @@ class SignalAnalyticsCard extends StatelessWidget {
                             color: color,
                           ),
                         ),
+                        // Direction indicator for optimized controller
+                        if (controller.isMovingBackward.value)
+                          Text(
+                            '⬅️ Moving backward',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: Colors.orange,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                       ],
                     ),
                   ),
@@ -115,19 +123,100 @@ class SignalAnalyticsCard extends StatelessWidget {
                     ),
                   ),
                   Text(
-                    'Quality: ${((controller.signalQuality[strongest.id] ?? 0) * 100).toStringAsFixed(0)}%',
+                    'Strength: ${(controller.signalStrength[strongest.id] ?? 0).toStringAsFixed(0)}%',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: Colors.white60,
                     ),
                   ),
                 ],
               ),
-              Text(
-                'Detections: ${controller.detectionCount[strongest.id] ?? 0} | Cycle: ${controller.scanCycleCount.value}',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: Colors.white70,
-                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Detections: ${controller.detectionCount[strongest.id] ?? 0} | Total: ${controller.totalDetections.value}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: Colors.white70,
+                      ),
+                    ),
+                  ),
+                  // Real-time continuous scanning indicator
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: controller.isScanning.value
+                          ? Colors.green.withOpacity(0.3)
+                          : Colors.orange.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: controller.isScanning.value
+                            ? Colors.green
+                            : Colors.orange,
+                        width: 1,
+                      ),
+                    ),
+                    child: Text(
+                      controller.isScanning.value ? 'LIVE' : 'INIT',
+                      style: TextStyle(
+                        color: controller.isScanning.value
+                            ? Colors.green
+                            : Colors.orange,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
               ),
+              // Last seen timestamp for debugging real-time updates
+              if (controller.lastSeen[strongest.id] != null)
+                Text(
+                  'Last seen: ${DateTime.now().difference(controller.lastSeen[strongest.id]!).inMilliseconds}ms ago',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: Colors.white54,
+                    fontSize: 10,
+                  ),
+                ),
+              // Real-time signal strength indicator
+              if (controller.signalStrength[strongest.id] != null &&
+                  controller.signalStrength[strongest.id]! > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Real-time strength: ',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: Colors.white60,
+                          fontSize: 10,
+                        ),
+                      ),
+                      Text(
+                        '${controller.signalStrength[strongest.id]!.toStringAsFixed(1)}%',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: _getStrengthColor(
+                            controller.signalStrength[strongest.id]!,
+                          ),
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      // Live update indicator
+                      Container(
+                        width: 6,
+                        height: 6,
+                        decoration: const BoxDecoration(
+                          color: Colors.green,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               if (signals.length > 1)
                 ..._buildAdditionalSignals(signals.skip(1)),
             ],
@@ -137,24 +226,111 @@ class SignalAnalyticsCard extends StatelessWidget {
     });
   }
 
+  /// Get active signals from the optimized controller
+  List<BleWaypoint> _getActiveSignals() {
+    final waypoints = controller.orderedWaypoints;
+    final filtered = waypoints.where((BleWaypoint waypoint) {
+      final rssi = controller.smoothedRssi[waypoint.id] ?? -100.0;
+      final strength = controller.signalStrength[waypoint.id] ?? 0.0;
+
+      // Show waypoints with decent signal or if reached
+      final hasSignal = rssi > -95.0 || strength > 10.0;
+      return hasSignal || waypoint.reached;
+    }).toList();
+
+    // Use explicit comparator function to avoid type inference issues
+    int compareWaypoints(BleWaypoint a, BleWaypoint b) {
+      // Sort by signal strength, reached waypoints first
+      if (a.reached && !b.reached) return -1;
+      if (!a.reached && b.reached) return 1;
+
+      final strengthA = controller.signalStrength[a.id] ?? 0.0;
+      final strengthB = controller.signalStrength[b.id] ?? 0.0;
+      return strengthB.compareTo(strengthA);
+    }
+
+    filtered.sort(compareWaypoints);
+
+    return filtered;
+  }
+
+  /// Calculate signal distance estimation
+  String _getSignalDistance(String waypointId) {
+    final rssi = controller.smoothedRssi[waypointId] ?? -100.0;
+    if (rssi >= -65) return '< 0.5m';
+    if (rssi >= -70) return '≈ 0.5-1m';
+    if (rssi >= -75) return '≈ 1-2m';
+    if (rssi >= -80) return '≈ 2-3m';
+    if (rssi >= -85) return '≈ 3-5m';
+    if (rssi >= -90) return '≈ 5-8m';
+    return '> 8m';
+  }
+
+  Color _getStrengthColor(double strength) {
+    if (strength >= 85) return Colors.green;
+    if (strength >= 65) return Colors.lightGreen;
+    if (strength >= 45) return Colors.orange;
+    if (strength >= 25) return Colors.deepOrange;
+    return Colors.red;
+  }
+
   List<Widget> _buildAdditionalSignals(Iterable<BleWaypoint> signals) {
     return [
       const SizedBox(height: 16),
       const Divider(color: Colors.white24, height: 1),
       const SizedBox(height: 8),
-      Text(
-        'Other Beacons',
-        style: TextStyle(
-          color: Colors.white.withOpacity(0.8),
-          fontSize: 12,
-          fontWeight: FontWeight.bold,
-        ),
+      Row(
+        children: [
+          Text(
+            'Other Beacons',
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.8),
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const Spacer(),
+          // Real-time scanning indicator
+          Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: controller.isScanning.value
+                      ? Colors.green
+                      : Colors.orange,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Text(
+                controller.isScanning.value ? 'SCANNING' : 'STOPPED',
+                style: TextStyle(
+                  color: controller.isScanning.value
+                      ? Colors.green
+                      : Colors.orange,
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
       const SizedBox(height: 8),
       ...signals.map((waypoint) {
         final color = controller.signalColorFor(waypoint.id);
         final percent = controller.signalPercentFor(waypoint.id);
-        final distance = controller.signalDistanceFor(waypoint.id);
+        final distance = _getSignalDistance(waypoint.id);
+        final rssi = controller.smoothedRssi[waypoint.id] ?? -100.0;
+        final isRecentlySeen =
+            controller.lastSeen[waypoint.id] != null &&
+            DateTime.now()
+                    .difference(controller.lastSeen[waypoint.id]!)
+                    .inSeconds <
+                2;
+
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: Row(
@@ -162,9 +338,25 @@ class SignalAnalyticsCard extends StatelessWidget {
               Expanded(
                 child: Text(
                   waypoint.label,
-                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  style: TextStyle(
+                    color: isRecentlySeen ? Colors.white : Colors.white70,
+                    fontSize: 13,
+                    fontWeight: isRecentlySeen
+                        ? FontWeight.bold
+                        : FontWeight.normal,
+                  ),
                 ),
               ),
+              if (isRecentlySeen)
+                Container(
+                  margin: const EdgeInsets.only(right: 4),
+                  width: 4,
+                  height: 4,
+                  decoration: const BoxDecoration(
+                    color: Colors.green,
+                    shape: BoxShape.circle,
+                  ),
+                ),
               Text(
                 '$percent%',
                 style: TextStyle(
@@ -173,11 +365,18 @@ class SignalAnalyticsCard extends StatelessWidget {
                   fontSize: 13,
                 ),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 8),
               Text(
                 distance,
                 style: const TextStyle(color: Colors.white70, fontSize: 11),
               ),
+              const SizedBox(width: 8),
+              // Show real-time RSSI for other beacons
+              if (rssi > -95)
+                Text(
+                  '${rssi.toStringAsFixed(0)}dBm',
+                  style: const TextStyle(color: Colors.white54, fontSize: 10),
+                ),
             ],
           ),
         );
@@ -195,7 +394,7 @@ class SignalAnalyticsCard extends StatelessWidget {
             const Icon(Icons.warning, color: Colors.orange, size: 32),
             const SizedBox(height: 12),
             const Text(
-              'Bluetooth Permissions Required',
+              'BLE Permissions Required',
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 16,
@@ -204,13 +403,24 @@ class SignalAnalyticsCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             const Text(
-              'BLE navigation requires location and Bluetooth permissions for beacon detection.',
+              'Continuous BLE navigation requires location and Bluetooth permissions for real-time beacon detection.',
               style: TextStyle(color: Colors.white70),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 16),
             ElevatedButton.icon(
-              onPressed: controller.checkAndRequestPermissions,
+              onPressed: () {
+                // Note: Controller should expose a public method for permission check
+                // You may need to add: Future<void> requestPermissions() async { await _checkPermissions(); }
+                // For now, this will attempt to call the method if it exists
+                if (controller.runtimeType.toString().contains(
+                  'PocNavigationController',
+                )) {
+                  // Call any available permission method or show settings dialog
+                  controller
+                      .restartScanning(); // This will trigger permission check if needed
+                }
+              },
               icon: const Icon(Icons.security),
               label: const Text('Grant Permissions'),
               style: ElevatedButton.styleFrom(
@@ -235,21 +445,68 @@ class SignalAnalyticsCard extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            const Icon(
-              Icons.bluetooth_searching,
-              color: Colors.white54,
-              size: 48,
+            Stack(
+              alignment: Alignment.center,
+              children: [
+                const Icon(
+                  Icons.bluetooth_searching,
+                  color: Colors.white54,
+                  size: 48,
+                ),
+                // Animated scanning indicator - only when actively scanning
+                if (controller.isScanning.value)
+                  Positioned(
+                    child: SizedBox(
+                      width: 60,
+                      height: 60,
+                      child: CircularProgressIndicator(
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          Colors.green.withOpacity(0.5),
+                        ),
+                        strokeWidth: 2,
+                      ),
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(height: 12),
-            const Text(
-              'Scanning for Beacons...',
-              style: TextStyle(color: Colors.white70, fontSize: 16),
+            Text(
+              controller.isScanning.value
+                  ? 'Scanning for BLE Beacons...'
+                  : 'Initializing BLE Scanner...',
+              style: const TextStyle(color: Colors.white70, fontSize: 16),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              controller.isScanning.value
+                  ? 'Continuous scanning active ⚡'
+                  : 'Starting up...',
+              style: TextStyle(
+                color: controller.isScanning.value
+                    ? Colors.green
+                    : Colors.orange,
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 8),
             Text(
-              'Scan cycle: ${controller.scanCycleCount.value} | Total detections: ${controller.totalDetections.value}',
-              style: const TextStyle(color: Colors.white70, fontSize: 12),
+              'Total detections: ${controller.totalDetections.value}',
+              style: const TextStyle(color: Colors.white54, fontSize: 11),
             ),
+            // Show waypoint progress instead of walking
+            if (controller.completedWaypoints.value > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  '📍 Waypoints: ${controller.completedWaypoints.value}/${controller.orderedWaypoints.length}',
+                  style: const TextStyle(
+                    color: Colors.green,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
           ],
         ),
       ),

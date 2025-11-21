@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:ar_navigation_cloud_anchor/poc/screens/calibartion_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 
@@ -162,7 +163,7 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
   void _openBeaconMode() {
     Navigator.of(
       context,
-    ).push(MaterialPageRoute(builder: (_) => const PocBeaconModeScreen()));
+    ).push(MaterialPageRoute(builder: (_) => const BeaconCalibrationScreen()));
   }
 
   bool get _canSaveLocation => !_permissionDenied && !_serviceDisabled;
@@ -261,7 +262,7 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
                     OutlinedButton.icon(
                       onPressed: _openBeaconMode,
                       icon: const Icon(Icons.bolt),
-                      label: const Text('Beacon Mode'),
+                      label: const Text('Beacon Clibration'),
                       style: OutlinedButton.styleFrom(
                         minimumSize: const Size.fromHeight(48),
                       ),

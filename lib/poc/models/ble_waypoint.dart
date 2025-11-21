@@ -1,87 +1,73 @@
-/// Model representing a BLE-based waypoint beacon
-/// 
-/// Each waypoint corresponds to a physical BLE beacon device (phone)
-/// placed along the navigation path. The waypoint is considered "reached"
-/// when the user's device detects a strong enough RSSI signal from the beacon.
+/// Optimized BLE Waypoint model for production navigation
+/// Handles waypoint state management with graceful degradation
 class BleWaypoint {
-  /// Unique identifier for the beacon (e.g., device ID, MAC address, UUID, or name)
   final String id;
-
-  /// Human-readable label for this waypoint
   final String label;
-
-  /// Order/sequence of this waypoint (1, 2, 3...)
   final int order;
 
+  bool _reached = false;
+  int _stableCount = 0;
+
+  BleWaypoint({required this.id, required this.label, required this.order});
+
   /// Whether this waypoint has been reached
-  bool reached;
+  bool get reached => _reached;
+  set reached(bool value) => _reached = value;
 
-  /// Last received RSSI value (in dBm) from this beacon
-  /// null if beacon hasn't been detected yet
-  int? lastRssi;
-
-  /// Smoothed RSSI value using exponential moving average
-  /// This helps reduce jitter in signal strength display
-  double? _smoothedRssi;
-
-  /// Counter for consecutive strong RSSI readings
-  /// Used to ensure stability before marking as reached
-  int _strongRssiCount = 0;
-
-  BleWaypoint({
-    required this.id,
-    required this.label,
-    required this.order,
-    this.reached = false,
-    this.lastRssi,
-  });
+  /// Current stable sample count
+  int get stableCount => _stableCount;
 
   /// Update RSSI and check if waypoint should be marked as reached
-  /// 
-  /// [rssi] - Signal strength in dBm (typically negative, e.g., -65)
-  /// [thresholdStrong] - RSSI threshold to consider "strong" (e.g., -65 dBm)
-  /// [stableSamplesRequired] - Number of consecutive strong readings needed
-  /// 
-  /// Returns true if waypoint was just marked as reached (was false, now true)
-  bool updateRssi(int rssi, int thresholdStrong, int stableSamplesRequired) {
-    // Apply exponential smoothing to RSSI for smoother updates
-    const alpha = 0.3; // Smoothing factor (0 < alpha < 1)
-    if (_smoothedRssi == null) {
-      _smoothedRssi = rssi.toDouble();
-    } else {
-      _smoothedRssi = alpha * rssi + (1 - alpha) * _smoothedRssi!;
-    }
-    
-    // Update lastRssi with smoothed value (rounded to nearest integer)
-    lastRssi = _smoothedRssi!.round();
+  /// Returns true if waypoint was just reached
+  bool updateRssi(int rssi, int threshold, int requiredSamples) {
+    final wasReached = _reached;
 
-    // Check if waypoint should be marked as reached (only if not already reached)
-    if (!reached) {
-      if (rssi >= thresholdStrong) {
-        _strongRssiCount++;
-        if (_strongRssiCount >= stableSamplesRequired) {
-          reached = true;
-          return true; // Just reached
-        }
-      } else {
-        // Reset counter if signal is not strong enough
-        _strongRssiCount = 0;
+    if (rssi >= threshold) {
+      _stableCount++;
+
+      if (_stableCount >= requiredSamples && !_reached) {
+        _reached = true;
+        return true; // Just reached
       }
+    } else {
+      // Gentle reduction instead of hard reset
+      reduceCounterGently();
     }
 
     return false;
   }
-  
-  /// Get smoothed RSSI value for display
-  int? get displayRssi => lastRssi;
 
-  /// Reset the waypoint (useful for testing or restarting navigation)
-  void reset() {
-    reached = false;
-    lastRssi = null;
-    _smoothedRssi = null;
-    _strongRssiCount = 0;
+  /// Gently reduce counter instead of hard reset
+  /// Provides forgiveness for temporary signal loss
+  void reduceCounterGently() {
+    if (_stableCount > 0) {
+      _stableCount = (_stableCount * 0.8).floor(); // Reduce by 20%
+      _stableCount = _stableCount.clamp(0, 10); // Keep reasonable bounds
+    }
   }
+
+  /// Reset waypoint state completely
+  void reset() {
+    _reached = false;
+    _stableCount = 0;
+  }
+
+  /// Reset only the counter, keep reached state
+  void resetCounter() {
+    _stableCount = 0;
+  }
+
+  @override
+  String toString() {
+    return 'BleWaypoint{id: $id, label: $label, order: $order, reached: $_reached, stableCount: $_stableCount}';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is BleWaypoint && other.id == id;
+  }
+
+  @override
+  int get hashCode => id.hashCode;
 }
-
-
