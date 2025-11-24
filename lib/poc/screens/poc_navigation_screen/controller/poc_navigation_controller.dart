@@ -31,8 +31,8 @@ class PocNavigationController extends GetxController {
   static const int _rssiOutlierThreshold = 12;
 
   // Waypoint Detection - Simplified & Reliable
-  static const double _waypointReachedThreshold = -70.0; // ~1-2m indoor range
-  static const int _requiredStableSamples = 5;
+  static const double _waypointReachedThreshold = -75.0; // ~1-2m indoor range
+  static const int _requiredStableSamples = 2;
   static const Duration _stateChangeCooldown = Duration(milliseconds: 500);
 
   // GPS Configuration
@@ -80,15 +80,17 @@ class PocNavigationController extends GetxController {
 
   // Beacon Device Mapping
   final Map<String, String> _deviceToWaypointMap = {
-    '6B:14:28:14:EF:C5': 'BEACON_1',
-    'BD:93:D8:1C:AF:30': 'BEACON_2',
-    'EC:B9:75:AB:22:23': 'BEACON_3',
+    '6B:14:28:14:EF:C5': 'BEACON_1', // lable no : 1
+    'C7:81:19:F7:CA:75': 'BEACON_2', // lable no : 4
+    'EC:B9:75:AB:22:23': 'BEACON_3', // lable no : 5
   };
 
   // Scanning State
   StreamSubscription<List<ScanResult>>? _scanSubscription;
+  StreamSubscription<BluetoothAdapterState>? _adapterStateSubscription;
   Timer? _timeoutTimer;
   Timer? _uiUpdateTimer;
+  bool _isDisposed = false; // Track if controller is disposed
 
   // UI Update Workers
   Worker? _rssiWorker;
@@ -166,6 +168,12 @@ class PocNavigationController extends GetxController {
 
   /// Start continuous BLE scanning (no restarts)
   Future<void> _startContinuousBleScanning() async {
+    // Don't start if disposed
+    if (_isDisposed) {
+      debugPrint('⚠️ Cannot start scanning - controller is disposed');
+      return;
+    }
+
     try {
       await _ensureBluetoothReady();
 
@@ -173,6 +181,12 @@ class PocNavigationController extends GetxController {
       if (_scanSubscription != null) {
         await FlutterBluePlus.stopScan();
         await _scanSubscription?.cancel();
+      }
+
+      // Double check we're not disposed before starting
+      if (_isDisposed) {
+        debugPrint('⚠️ Controller disposed before starting scan');
+        return;
       }
 
       debugPrint('🚀 Starting continuous BLE scanning');
@@ -194,7 +208,7 @@ class PocNavigationController extends GetxController {
       );
 
       // Monitor adapter state
-      FlutterBluePlus.adapterState.listen((state) {
+      _adapterStateSubscription = FlutterBluePlus.adapterState.listen((state) {
         if (state != BluetoothAdapterState.on) {
           _handleBluetoothStateChange(state);
         }
@@ -228,14 +242,26 @@ class PocNavigationController extends GetxController {
 
   /// Monitor Bluetooth state changes
   void _handleBluetoothStateChange(BluetoothAdapterState state) {
+    // Don't restart if controller is disposed
+    if (_isDisposed) {
+      debugPrint(
+        '🔵 Bluetooth state changed but controller is disposed: $state',
+      );
+      return;
+    }
+
     debugPrint('🔵 Bluetooth state changed: $state');
 
     if (state == BluetoothAdapterState.on) {
-      // Restart scanning when Bluetooth comes back
-      _startContinuousBleScanning();
+      // Restart scanning when Bluetooth comes back (only if not disposed)
+      if (!_isDisposed) {
+        _startContinuousBleScanning();
+      }
     } else {
       isScanning.value = false;
-      SnackBarUtil.showErrorSnackbar('Bluetooth disconnected');
+      if (!_isDisposed) {
+        SnackBarUtil.showErrorSnackbar('Bluetooth disconnected');
+      }
     }
   }
 
@@ -412,6 +438,7 @@ class PocNavigationController extends GetxController {
   }
 
   /// Process waypoint detection with stable sampling
+  /// Process waypoint detection with stable sampling
   bool _processWaypointDetection(String waypointId, double rssi) {
     final waypoint = _waypointMap[waypointId]!;
     final now = DateTime.now();
@@ -429,16 +456,37 @@ class PocNavigationController extends GetxController {
     if (meetsThreshold) {
       _stableSampleCount[waypointId] = currentCount + 1;
 
-      if (currentCount + 1 >= _requiredStableSamples && !waypoint.reached) {
-        _handleWaypointReached(waypointId, now);
-        return true;
+      if (currentCount + 1 >= _requiredStableSamples) {
+        if (!waypoint.reached) {
+          // First time reaching this waypoint
+          _handleWaypointReached(waypointId, now);
+          _stableSampleCount[waypointId] = 0;
+          return true;
+        } else if (waypoint.reached && _isBackwardMovement(waypointId)) {
+          // User moved backward to previously reached waypoint
+          _handleWaypointUnreached(waypointId, now);
+          _stableSampleCount[waypointId] = 0;
+          return true;
+        }
+        // If waypoint.reached && !_isBackwardMovement -> user staying at same waypoint, do nothing
       }
     } else {
-      // Gentle reset - don't immediately drop to 0
       _stableSampleCount[waypointId] = math.max(0, currentCount - 1);
     }
 
     return false;
+  }
+
+  /// Check if detecting this waypoint represents backward movement
+  bool _isBackwardMovement(String waypointId) {
+    if (reachedWaypointHistory.isEmpty) return false;
+
+    final currentWaypoint = _waypointMap[waypointId]!;
+    final lastReachedId = reachedWaypointHistory.last;
+    final lastWaypoint = _waypointMap[lastReachedId]!;
+
+    // Backward movement: current waypoint order < last reached waypoint order
+    return currentWaypoint.order < lastWaypoint.order;
   }
 
   /// Handle waypoint reached with bidirectional logic
@@ -458,6 +506,36 @@ class PocNavigationController extends GetxController {
     debugPrint(
       '   Strength: ${signalStrength[waypointId]?.toStringAsFixed(1)}%',
     );
+  }
+
+  /// Handle waypoint unreached (backward movement)
+  void _handleWaypointUnreached(String waypointId, DateTime timestamp) {
+    final waypoint = _waypointMap[waypointId]!;
+    _lastStateChange[waypointId] = timestamp;
+
+    // This means user returned to a previously reached waypoint
+    // Mark all waypoints after this one as unreached
+    _handleBackwardMovement(waypointId);
+
+    SnackBarUtil.showSuccessSnackbar('⬅️ RETURNED TO ${waypoint.label}');
+    debugPrint('🎯 WAYPOINT LEFT: ${waypoint.label}');
+  }
+
+  /// Handle backward movement logic
+  void _handleBackwardMovement(String targetWaypointId) {
+    final targetIndex = reachedWaypointHistory.indexOf(targetWaypointId);
+    if (targetIndex == -1) return;
+
+    // Remove all waypoints after target from history
+    while (reachedWaypointHistory.length > targetIndex + 1) {
+      final removedId = reachedWaypointHistory.removeLast();
+      final removedWaypoint = _waypointMap[removedId]!;
+      removedWaypoint.reached = false;
+      removedWaypoint.reset();
+    }
+
+    isMovingBackward.value = true;
+    completedWaypoints.value = reachedWaypointHistory.length;
   }
 
   /// Update waypoint progression with bidirectional support
@@ -674,22 +752,84 @@ class PocNavigationController extends GetxController {
     SnackBarUtil.showErrorSnackbar('$message: $error');
   }
 
+  /// Cleanup resources - Public method to allow manual cleanup
+  void cleanup() {
+    _cleanup();
+  }
+
   /// Cleanup resources
   void _cleanup() {
-    _scanSubscription?.cancel();
-    _timeoutTimer?.cancel();
-    _uiUpdateTimer?.cancel();
-    _rssiWorker?.dispose();
-    _distanceWorker?.dispose();
+    if (_isDisposed) {
+      debugPrint('⚠️ Cleanup already called, skipping');
+      return;
+    }
 
-    FlutterBluePlus.stopScan().catchError((e) {
-      debugPrint('Error stopping scan: $e');
-    });
+    debugPrint('🧹 Cleaning up POC Navigation Controller');
 
-    _gpsService.stop(locationService: _locationService);
-    WakelockPlus.disable();
+    // Mark as disposed FIRST to prevent any restart attempts
+    _isDisposed = true;
 
+    // Set scanning to false immediately to prevent new operations
     isScanning.value = false;
+
+    // Close any open snackbars first
+    if (Get.isSnackbarOpen) {
+      Get.closeAllSnackbars();
+    }
+
+    // Cancel scan subscription FIRST - this stops processing scan results
+    _scanSubscription?.cancel();
+    _scanSubscription = null;
+
+    // Cancel adapter state subscription
+    _adapterStateSubscription?.cancel();
+    _adapterStateSubscription = null;
+
+    // Cancel all timers
+    _timeoutTimer?.cancel();
+    _timeoutTimer = null;
+    _uiUpdateTimer?.cancel();
+    _uiUpdateTimer = null;
+
+    // Dispose workers
+    _rssiWorker?.dispose();
+    _rssiWorker = null;
+    _distanceWorker?.dispose();
+    _distanceWorker = null;
+
+    // Stop BLE scanning - call synchronously and handle errors
+    try {
+      // Stop scan immediately - don't wait for async completion
+      FlutterBluePlus.stopScan()
+          .then((_) {
+            debugPrint('✅ BLE scanning stopped successfully');
+          })
+          .catchError((e) {
+            debugPrint('⚠️ Error stopping scan: $e');
+            // Try one more time
+            FlutterBluePlus.stopScan().catchError((e2) {
+              debugPrint('⚠️ Second attempt to stop scan also failed: $e2');
+            });
+          });
+    } catch (e) {
+      debugPrint('⚠️ Exception while stopping scan: $e');
+    }
+
+    // Stop GPS tracking
+    try {
+      _gpsService.stop(locationService: _locationService);
+    } catch (e) {
+      debugPrint('⚠️ Error stopping GPS: $e');
+    }
+
+    // Disable wakelock
+    try {
+      WakelockPlus.disable();
+    } catch (e) {
+      debugPrint('⚠️ Error disabling wakelock: $e');
+    }
+
+    debugPrint('✅ POC Navigation Controller cleanup complete');
   }
 
   // Public API for UI

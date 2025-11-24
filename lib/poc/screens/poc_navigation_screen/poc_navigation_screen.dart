@@ -6,27 +6,63 @@ import 'controller/poc_navigation_controller.dart';
 import 'widgets/signal_analytics_card.dart';
 import 'widgets/vertical_progress_line.dart';
 
-class PocNavigationScreen extends GetView<PocNavigationController> {
+class PocNavigationScreen extends StatefulWidget {
   final SavedLocation target;
 
-  PocNavigationScreen({super.key, required this.target}) {
+  const PocNavigationScreen({super.key, required this.target});
+
+  @override
+  State<PocNavigationScreen> createState() => _PocNavigationScreenState();
+}
+
+class _PocNavigationScreenState extends State<PocNavigationScreen> {
+  late PocNavigationController controller;
+
+  @override
+  void initState() {
+    super.initState();
+    // Delete existing controller if any
     if (Get.isRegistered<PocNavigationController>()) {
       Get.delete<PocNavigationController>();
     }
-    Get.put(PocNavigationController(target));
+    // Create and register new controller
+    controller = Get.put(PocNavigationController(widget.target));
   }
 
   @override
-  PocNavigationController get controller => Get.find<PocNavigationController>();
+  void dispose() {
+    // Ensure controller is properly disposed when screen is disposed
+    _cleanupController();
+    super.dispose();
+  }
+
+  void _cleanupController() {
+    if (Get.isRegistered<PocNavigationController>()) {
+      final controllerToCleanup = Get.find<PocNavigationController>();
+      // Manually call cleanup to ensure scanning stops immediately
+      controllerToCleanup.cleanup();
+      // Then delete the controller
+      Get.delete<PocNavigationController>();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(appBar: _renderAppBar(), body: _renderBody());
+    return PopScope(
+      canPop: true,
+      onPopInvoked: (didPop) {
+        if (didPop) {
+          // Cleanup controller immediately when navigating back
+          _cleanupController();
+        }
+      },
+      child: Scaffold(appBar: _renderAppBar(), body: _renderBody()),
+    );
   }
 
   PreferredSizeWidget _renderAppBar() {
     return AppBar(
-      title: Text('Navigate to ${target.name}'),
+      title: Text('Navigate to ${widget.target.name}'),
       centerTitle: true,
       backgroundColor: Colors.transparent,
       elevation: 0,
