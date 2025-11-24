@@ -6,7 +6,6 @@ import 'package:geolocator/geolocator.dart';
 
 import '../../models/saved_location.dart';
 import '../../storage/location_storage.dart';
-import '../poc_beacon_mode_screen/beacon_mode_screen.dart';
 import '../poc_navigation_screen/poc_navigation_screen.dart';
 
 /// Home screen for the POC:
@@ -258,15 +257,7 @@ class _PocHomeScreenState extends State<PocHomeScreen> {
                               },
                             ),
                     ),
-                    const SizedBox(height: 12),
-                    OutlinedButton.icon(
-                      onPressed: _openBeaconMode,
-                      icon: const Icon(Icons.bolt),
-                      label: const Text('Beacon Clibration'),
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size.fromHeight(48),
-                      ),
-                    ),
+
                     const SizedBox(height: 12),
                     ElevatedButton.icon(
                       onPressed: _canStartNavigation ? _startNavigation : null,

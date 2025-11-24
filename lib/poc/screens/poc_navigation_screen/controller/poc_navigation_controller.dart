@@ -31,8 +31,8 @@ class PocNavigationController extends GetxController {
   static const int _rssiOutlierThreshold = 12;
 
   // Waypoint Detection - Simplified & Reliable
-  static const double _waypointReachedThreshold = -75.0; // ~1-2m indoor range
-  static const int _requiredStableSamples = 2;
+  static const double _waypointReachedThreshold = -70.0; // ~1-2m indoor range
+  static const int _requiredStableSamples = 7;
   static const Duration _stateChangeCooldown = Duration(milliseconds: 500);
 
   // GPS Configuration
@@ -517,7 +517,7 @@ class PocNavigationController extends GetxController {
     // Mark all waypoints after this one as unreached
     _handleBackwardMovement(waypointId);
 
-    SnackBarUtil.showSuccessSnackbar('⬅️ RETURNED TO ${waypoint.label}');
+    //SnackBarUtil.showSuccessSnackbar('⬅️ RETURNED TO ${waypoint.label}');
     debugPrint('🎯 WAYPOINT LEFT: ${waypoint.label}');
   }
 
@@ -842,11 +842,17 @@ class PocNavigationController extends GetxController {
   /// Check if compass heading is available
   bool get hasHeading => headingDegrees.value != null;
 
-  /// Get navigation arrow rotation
+  /// Get navigation arrow rotation with debug logging
   double get navigationArrowRadians {
     final position = currentPosition.value;
     final heading = headingDegrees.value;
-    if (position == null || heading == null) return 0.0;
+
+    if (position == null || heading == null) {
+      debugPrint(
+        '🧭 Navigation: Missing data - Position: $position, Heading: $heading',
+      );
+      return 0.0;
+    }
 
     final bearing = bearingBetween(
       position.lat,
@@ -854,8 +860,28 @@ class PocNavigationController extends GetxController {
       target.latitude,
       target.longitude,
     );
+
     final relativeDeg = (bearing - heading + 360.0) % 360.0;
-    return relativeDeg * (math.pi / 180.0);
+    final radians = relativeDeg * (math.pi / 180.0);
+
+    // Debug logs for compass testing
+    debugPrint('🧭 === COMPASS DEBUG ===');
+    debugPrint(
+      '📍 Current: ${position.lat.toStringAsFixed(6)}, ${position.lng.toStringAsFixed(6)}',
+    );
+    debugPrint(
+      '🎯 Target: ${target.latitude.toStringAsFixed(6)}, ${target.longitude.toStringAsFixed(6)}',
+    );
+    debugPrint('📐 True Bearing: ${bearing.toStringAsFixed(1)}°');
+    debugPrint('🧭 Device Heading: ${heading.toStringAsFixed(1)}°');
+    debugPrint('➡️ Relative Direction: ${relativeDeg.toStringAsFixed(1)}°');
+    debugPrint(
+      '🔄 Arrow Rotation: ${(radians * 180 / math.pi).toStringAsFixed(1)}°',
+    );
+    debugPrint('📏 Distance: ${distanceText}');
+    debugPrint('🧭 ==================');
+
+    return radians;
   }
 
   /// Get distance text for display
