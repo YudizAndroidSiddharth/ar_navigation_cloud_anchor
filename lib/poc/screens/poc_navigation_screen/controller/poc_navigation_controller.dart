@@ -259,8 +259,8 @@ class PocNavigationController extends GetxController {
       }
     } else {
       isScanning.value = false;
-      if (!_isDisposed) {
-        SnackBarUtil.showErrorSnackbar('Bluetooth disconnected');
+      if (!_isDisposed && Get.context != null) {
+        SnackBarUtil.showErrorSnackbar(Get.context!, 'Bluetooth disconnected');
       }
     }
   }
@@ -499,7 +499,12 @@ class PocNavigationController extends GetxController {
     final direction = isMovingBackward.value ? 'LEFT' : 'REACHED';
     final emoji = isMovingBackward.value ? '⬅️' : '✅';
 
-    SnackBarUtil.showSuccessSnackbar('$emoji $direction ${waypoint.label}');
+    if (Get.context != null) {
+      SnackBarUtil.showSuccessSnackbar(
+        Get.context!,
+        '$emoji $direction ${waypoint.label}',
+      );
+    }
 
     debugPrint('🎯 WAYPOINT $direction: ${waypoint.label}');
     debugPrint('   RSSI: ${smoothedRssi[waypointId]?.toStringAsFixed(1)}dBm');
@@ -731,7 +736,12 @@ class PocNavigationController extends GetxController {
   /// Handle permission denied
   void _handlePermissionDenied(List<Permission> denied) {
     final names = denied.map((p) => p.toString().split('.').last).join(', ');
-    SnackBarUtil.showErrorSnackbar('Permissions required: $names');
+    if (Get.context != null) {
+      SnackBarUtil.showErrorSnackbar(
+        Get.context!,
+        'Permissions required: $names',
+      );
+    }
 
     Get.defaultDialog(
       title: 'Permissions Required',
@@ -749,7 +759,9 @@ class PocNavigationController extends GetxController {
   /// Handle errors with logging
   void _handleError(String message, dynamic error) {
     debugPrint('❌ $message: $error');
-    SnackBarUtil.showErrorSnackbar('$message: $error');
+    if (Get.context != null) {
+      SnackBarUtil.showErrorSnackbar(Get.context!, '$message: $error');
+    }
   }
 
   /// Cleanup resources - Public method to allow manual cleanup
@@ -773,8 +785,8 @@ class PocNavigationController extends GetxController {
     isScanning.value = false;
 
     // Close any open snackbars first
-    if (Get.isSnackbarOpen) {
-      Get.closeAllSnackbars();
+    if (Get.context != null) {
+      SnackBarUtil.clearSnackBars(Get.context!);
     }
 
     // Cancel scan subscription FIRST - this stops processing scan results

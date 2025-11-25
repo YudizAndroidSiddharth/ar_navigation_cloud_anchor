@@ -1,4 +1,5 @@
 import 'package:ar_navigation_cloud_anchor/poc/screens/credit_recharge_screen/credit_recharge_screen.dart';
+import 'package:ar_navigation_cloud_anchor/poc/screens/food_bucket_screen/food_bucket_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get_navigation/get_navigation.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -47,7 +48,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _renderActionCard(
           titleLines: const ['फूड', 'बकेट'],
           icon: Icons.shopping_basket_outlined,
-          onTap: () {},
+          onTap: () {
+            navigator?.push(
+              MaterialPageRoute(builder: (context) => const FoodBucketScreen()),
+            );
+          },
         ),
         const SizedBox(height: 16),
         _renderActionCard(
@@ -65,7 +70,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _renderHeader(BuildContext context) {
     final size = MediaQuery.of(context).size;
-    final headerHeight = size.height * 0.35;
+    final headerHeight = size.height * 0.40;
     final statusBarHeight = MediaQuery.of(context).padding.top;
 
     return SizedBox(
