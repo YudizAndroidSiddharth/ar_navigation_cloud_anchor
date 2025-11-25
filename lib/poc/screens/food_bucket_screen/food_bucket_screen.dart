@@ -1,4 +1,6 @@
+import 'package:ar_navigation_cloud_anchor/poc/screens/cow_selection_screen/cow_selction_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:get/get_navigation/src/extension_navigation.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:ar_navigation_cloud_anchor/poc/utils/pref_utiles.dart';
 import 'package:ar_navigation_cloud_anchor/poc/screens/credit_recharge_screen/credit_recharge_screen.dart';
@@ -118,7 +120,6 @@ class _FoodBucketScreenState extends State<FoodBucketScreen> {
 
   Future<void> _handleProceedButton() async {
     if (_selectedItems.isEmpty) {
-      SnackBarUtil.showErrorSnackbar(context, 'कृपया कम से कम एक आइटम चुनें।');
       return;
     }
 
@@ -159,6 +160,9 @@ class _FoodBucketScreenState extends State<FoodBucketScreen> {
     SnackBarUtil.showInfoSnackbar(
       context,
       'सफलतापूर्वक खरीदारी की गई। शेष क्रेडिट: ₹$newBalance',
+    );
+    navigator?.push(
+      MaterialPageRoute(builder: (context) => const CowSelctionScreen()),
     );
   }
 
