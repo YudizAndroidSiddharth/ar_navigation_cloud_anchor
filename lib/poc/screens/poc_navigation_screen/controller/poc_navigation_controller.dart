@@ -11,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../../../utiles/snackbar_utiles.dart';
+import '../../../utils/pref_utiles.dart';
 import '../../../models/ble_waypoint.dart';
 import '../../../models/saved_location.dart';
 import '../../../services/filtered_location_service.dart';
@@ -31,8 +32,8 @@ class PocNavigationController extends GetxController {
   static const int _rssiOutlierThreshold = 12;
 
   // Waypoint Detection - Simplified & Reliable
-  static const double _waypointReachedThreshold = -70.0; // ~1-2m indoor range
-  static const int _requiredStableSamples = 7;
+  double _waypointReachedThreshold = -70; // default dBm
+  int _requiredStableSamples = 5;
   static const Duration _stateChangeCooldown = Duration(milliseconds: 500);
 
   // GPS Configuration
@@ -102,6 +103,7 @@ class PocNavigationController extends GetxController {
   @override
   void onInit() {
     super.onInit();
+    _loadDeveloperSettings();
     _initializeWaypoints();
     _setupUIWorkers();
   }
@@ -128,6 +130,23 @@ class PocNavigationController extends GetxController {
       signalQuality[waypoint.id] = 0.0;
       detectionCount[waypoint.id] = 0;
       _stableSampleCount[waypoint.id] = 0;
+    }
+  }
+
+  Future<void> _loadDeveloperSettings() async {
+    try {
+      await PrefUtils().init();
+      final threshold = PrefUtils().getThresholdValue();
+      final stableSamples = PrefUtils().getRequiredStableSample();
+      _waypointReachedThreshold = threshold
+          .clamp(-100, -40)
+          .toDouble(); // safety clamp
+      _requiredStableSamples = stableSamples <= 0 ? 5 : stableSamples;
+      debugPrint(
+        '⚙️ Developer settings loaded: threshold=$_waypointReachedThreshold, stableSamples=$_requiredStableSamples',
+      );
+    } catch (e) {
+      debugPrint('⚠️ Failed to load developer settings: $e');
     }
   }
 

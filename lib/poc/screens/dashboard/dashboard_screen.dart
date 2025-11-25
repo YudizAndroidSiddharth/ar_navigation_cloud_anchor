@@ -1,4 +1,5 @@
 import 'package:ar_navigation_cloud_anchor/poc/screens/credit_recharge_screen/credit_recharge_screen.dart';
+import 'package:ar_navigation_cloud_anchor/poc/screens/developer_options_screen/developers_options_screen.dart';
 import 'package:ar_navigation_cloud_anchor/poc/screens/food_bucket_screen/food_bucket_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get_navigation/get_navigation.dart';
@@ -42,7 +43,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _renderActionCard(
           titleLines: const ['डेवलपर', 'मोड'],
           icon: Icons.android,
-          onTap: () {},
+          onTap: () {
+            navigator?.push(
+              MaterialPageRoute(
+                builder: (context) => const DevelopersOptionsScreen(),
+              ),
+            );
+          },
         ),
         const SizedBox(height: 16),
         _renderActionCard(
