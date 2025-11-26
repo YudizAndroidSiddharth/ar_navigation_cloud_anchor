@@ -1,4 +1,6 @@
+import 'package:ar_navigation_cloud_anchor/poc/screens/feeding_zone_screen/select_feeding_zone_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:get/get_navigation/src/extension_navigation.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:ar_navigation_cloud_anchor/utiles/snackbar_utiles.dart';
 
@@ -78,6 +80,11 @@ class _CowSelctionScreenState extends State<CowSelctionScreen> {
       SnackBarUtil.showSuccessSnackbar(
         context,
         'आपने ${_selectedCow!.name} चुनी है',
+      );
+      navigator?.push(
+        MaterialPageRoute(
+          builder: (context) => const SelectFeedingZoneScreen(),
+        ),
       );
     }
   }

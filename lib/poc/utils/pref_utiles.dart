@@ -21,6 +21,7 @@ class PrefUtils {
   static const String _balanceKey = 'available_balance';
   static const String _thresholdKey = 'dev_threshold_value';
   static const String _stableSampleKey = 'dev_required_stable_sample';
+  static const String _selectedPlatformKey = 'selected_feeding_platform';
 
   Future<void> setAvailableBalance(int value) async {
     if (_sharedPreferences == null) {
@@ -72,6 +73,13 @@ class PrefUtils {
     await _sharedPreferences!.setInt(_stableSampleKey, normalizedValue);
   }
 
+  Future<SharedPreferences> getPrefs() async {
+    if (_sharedPreferences == null) {
+      await init();
+    }
+    return _sharedPreferences!;
+  }
+
   int getRequiredStableSample() {
     try {
       if (_sharedPreferences == null) {
@@ -82,6 +90,24 @@ class PrefUtils {
       return storedValue;
     } catch (e) {
       return 5;
+    }
+  }
+
+  Future<void> setSelectedPlatform(String value) async {
+    if (_sharedPreferences == null) {
+      await init();
+    }
+    await _sharedPreferences!.setString(_selectedPlatformKey, value);
+  }
+
+  String? getSelectedPlatform() {
+    try {
+      if (_sharedPreferences == null) {
+        return null;
+      }
+      return _sharedPreferences!.getString(_selectedPlatformKey);
+    } catch (e) {
+      return null;
     }
   }
 }

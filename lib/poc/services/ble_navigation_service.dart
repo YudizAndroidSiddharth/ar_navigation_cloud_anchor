@@ -89,6 +89,7 @@ class BleNavigationService {
         oneByOne: false,
         androidScanMode: AndroidScanMode.lowLatency,
         androidUsesFineLocation: true,
+        withServices: [Guid('1a957d0f-78c2-4c95-bfdf-bf483e7b67ac')],
       );
 
       _isScanning = true;

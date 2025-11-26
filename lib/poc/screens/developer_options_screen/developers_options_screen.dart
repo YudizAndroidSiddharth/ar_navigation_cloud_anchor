@@ -1,3 +1,4 @@
+import 'package:ar_navigation_cloud_anchor/poc/screens/feeding_zone_screen/feeding_zone_screen.dart';
 import 'package:ar_navigation_cloud_anchor/poc/screens/poc_home_screen/poc_home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get_navigation/src/extension_navigation.dart';
@@ -147,7 +148,11 @@ class _DevelopersOptionsScreenState extends State<DevelopersOptionsScreen> {
                 _buildActionCard(
                   title: 'Add Feeding Zone',
                   subtitle: 'Setup feeding zones for cows',
-                  onTap: () => _openPlaceholderScreen('Add Feeding Zone'),
+                  onTap: () => navigator?.push(
+                    MaterialPageRoute(
+                      builder: (context) => const FeedingZoneScreen(),
+                    ),
+                  ),
                 ),
               ],
             ),

@@ -1,3 +1,4 @@
+import 'package:ar_navigation_cloud_anchor/utiles/snackbar_utiles.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:ar_navigation_cloud_anchor/poc/utils/pref_utiles.dart';
@@ -74,12 +75,16 @@ class _CreditRechargeScreenState extends State<CreditRechargeScreen> {
     });
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Recharge successful. Credit added.'),
-          backgroundColor: Colors.green,
-          duration: Duration(seconds: 2),
-        ),
+      // ScaffoldMessenger.of(context).showSnackBar(
+      //   const SnackBar(
+      //     content: Text('Recharge successful. Credit added.'),
+      //     backgroundColor: Colors.green,
+      //     duration: Duration(seconds: 2),
+      //   ),
+      // );
+      SnackBarUtil.showSuccessSnackbar(
+        context,
+        'क्रेडिट खरीदें सफलतापूर्वक हुआ',
       );
     }
   }
