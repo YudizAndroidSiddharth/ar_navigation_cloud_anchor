@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -85,9 +86,37 @@ class _FeedingZoneScreenState extends State<FeedingZoneScreen> {
 
   Future<bool> _saveLocation(String zone, String nickname) async {
     try {
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.bestForNavigation,
-      );
+      // Get position with timeout to prevent hanging
+      final position =
+          await Geolocator.getCurrentPosition(
+            desiredAccuracy: LocationAccuracy.bestForNavigation,
+            timeLimit: const Duration(seconds: 10),
+          ).timeout(
+            const Duration(seconds: 15),
+            onTimeout: () {
+              throw Exception('GPS timeout: Unable to get current position');
+            },
+          );
+
+      // Validate position coordinates
+      if (!position.latitude.isFinite || !position.longitude.isFinite) {
+        throw Exception('Invalid GPS coordinates received');
+      }
+
+      // Validate coordinate ranges
+      if (position.latitude < -90 ||
+          position.latitude > 90 ||
+          position.longitude < -180 ||
+          position.longitude > 180) {
+        throw Exception('GPS coordinates out of valid range');
+      }
+
+      // Validate accuracy if available
+      if (position.accuracy.isFinite && position.accuracy > 100) {
+        // Warn but don't fail - low accuracy is acceptable for some use cases
+        debugPrint('⚠️ Low GPS accuracy: ${position.accuracy}m');
+      }
+
       final trimmedNick = nickname.trim();
       final name = trimmedNick.isEmpty ? zone : '$zone - $trimmedNick';
       final location = SavedLocation(
@@ -95,6 +124,7 @@ class _FeedingZoneScreenState extends State<FeedingZoneScreen> {
         latitude: position.latitude,
         longitude: position.longitude,
       );
+
       await _storage.addLocation(location);
       await _loadLocations();
       if (!mounted) return false;
@@ -102,7 +132,12 @@ class _FeedingZoneScreenState extends State<FeedingZoneScreen> {
       return true;
     } catch (e) {
       if (!mounted) return false;
-      SnackBarUtil.showErrorSnackbar(context, 'लोकेशन सेव नहीं हो पाया: $e');
+      final errorMessage = e.toString().replaceAll('Exception: ', '');
+      SnackBarUtil.showErrorSnackbar(
+        context,
+        'लोकेशन सेव नहीं हो पाया: $errorMessage',
+      );
+      debugPrint('❌ Error saving location: $e');
       return false;
     }
   }

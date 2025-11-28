@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -16,6 +15,7 @@ import '../../../models/ble_waypoint.dart';
 import '../../../models/saved_location.dart';
 import '../../../services/filtered_location_service.dart';
 import '../../../services/gps_navigation_service.dart';
+import '../../../services/ble_navigation_service.dart';
 import '../../../utils/geo_utils.dart';
 
 /// Production-ready POC Navigation Controller
@@ -36,11 +36,14 @@ class PocNavigationController extends GetxController {
   int _requiredStableSamples = 5;
   static const Duration _stateChangeCooldown = Duration(milliseconds: 500);
 
-  // GPS Configuration
-  static const double _gpsDestinationThreshold = 3.0;
-  static const double _signalFloor = 5.0; // Never show 0%
+  // Distance smoothing
+  static const int _minStableGpsSamples = 3;
+  static const double _distanceSmoothingFactor = 0.6;
 
-  // Services
+  // Signal strength display
+  static const double _signalFloor = 0.0;
+
+  // GPS & Location Services
   final FilteredLocationService _locationService = FilteredLocationService();
   final GpsNavigationService _gpsService = GpsNavigationService();
 
@@ -81,14 +84,15 @@ class PocNavigationController extends GetxController {
 
   // Beacon Device Mapping
   final Map<String, String> _deviceToWaypointMap = {
-    '6B:14:28:14:EF:C5': 'BEACON_1', // lable no : 1
-    'C7:81:19:F7:CA:75': 'BEACON_2', // lable no : 4
-    'EC:B9:75:AB:22:23': 'BEACON_3', // lable no : 5
+    '6B:14:28:14:EF:C5': 'BEACON_1', // label no : 1
+    'C7:81:19:F7:CA:75': 'BEACON_2', // label no : 4
+    'EC:B9:75:AB:22:23': 'BEACON_3', // label no : 5
   };
 
-  // Scanning State
-  StreamSubscription<List<ScanResult>>? _scanSubscription;
-  StreamSubscription<BluetoothAdapterState>? _adapterStateSubscription;
+  // BLE navigation service
+  final BleNavigationService _bleService = BleNavigationService();
+
+  // Scanning & timer state
   Timer? _timeoutTimer;
   Timer? _uiUpdateTimer;
   bool _isDisposed = false; // Track if controller is disposed
@@ -99,6 +103,7 @@ class PocNavigationController extends GetxController {
 
   double? _smoothedDistanceMeters;
   int _stableGpsCount = 0;
+  DateTime? _lastNavLog; // For throttling navigation debug logs
 
   @override
   void onInit() {
@@ -111,7 +116,11 @@ class PocNavigationController extends GetxController {
   @override
   void onReady() {
     super.onReady();
-    _checkPermissions().then((_) => _startNavigation());
+    _checkPermissions().then((granted) {
+      if (granted) {
+        _startNavigation();
+      }
+    });
   }
 
   @override
@@ -185,7 +194,47 @@ class PocNavigationController extends GetxController {
     );
   }
 
-  /// Start continuous BLE scanning (no restarts)
+  /// Handle GPS updates with smoothing
+  void _handleGpsUpdate(LatLng position) {
+    currentPosition.value = position;
+
+    final distanceMeters = Geolocator.distanceBetween(
+      position.lat,
+      position.lng,
+      target.latitude,
+      target.longitude,
+    );
+
+    // Initialize smoothed distance if null
+    if (_smoothedDistanceMeters == null) {
+      _smoothedDistanceMeters = distanceMeters;
+      _stableGpsCount = 1;
+      // Show raw distance immediately to avoid showing 0
+      displayDistanceMeters.value = distanceMeters;
+    } else {
+      // Update smoothed distance using weighted average
+      _smoothedDistanceMeters =
+          _distanceSmoothingFactor * distanceMeters +
+          (1 - _distanceSmoothingFactor) * _smoothedDistanceMeters!;
+      _stableGpsCount++;
+
+      // Show raw distance until we have enough stable samples, then use smoothed
+      if (_stableGpsCount >= _minStableGpsSamples) {
+        displayDistanceMeters.value = _smoothedDistanceMeters;
+      } else {
+        // Show raw distance during initial warm-up to provide immediate feedback
+        displayDistanceMeters.value = distanceMeters;
+      }
+    }
+  }
+
+  /// Handle heading updates
+  void _handleHeadingUpdate(double? heading) {
+    if (heading == null) return;
+    headingDegrees.value = heading;
+  }
+
+  /// Start continuous BLE scanning via BleNavigationService
   Future<void> _startContinuousBleScanning() async {
     // Don't start if disposed
     if (_isDisposed) {
@@ -194,44 +243,28 @@ class PocNavigationController extends GetxController {
     }
 
     try {
-      await _ensureBluetoothReady();
+      debugPrint('🚀 Starting continuous BLE scanning via service');
 
-      // Stop any existing scan
-      if (_scanSubscription != null) {
-        await FlutterBluePlus.stopScan();
-        await _scanSubscription?.cancel();
-      }
-
-      // Double check we're not disposed before starting
-      if (_isDisposed) {
-        debugPrint('⚠️ Controller disposed before starting scan');
-        return;
-      }
-
-      debugPrint('🚀 Starting continuous BLE scanning');
-
-      // Start continuous scan with no timeout
-      await FlutterBluePlus.startScan(
-        timeout: null, // Continuous scanning
-        continuousUpdates: true, // Critical for real-time updates
-        continuousDivisor: 1, // Process all advertisements
-        oneByOne: false, // Deduplicated list mode
-        androidScanMode: AndroidScanMode.lowLatency, // Fastest scanning
-        androidUsesFineLocation: true,
+      await _bleService.startContinuousScanning(
+        onScanResults: (results) {
+          if (_isDisposed) return;
+          _processScanResults(results);
+        },
+        onError: (message) {
+          _handleError(message, null);
+        },
+        onBluetoothStateChanged: () {
+          // Service will restart scanning when Bluetooth comes back.
+          // Here we just update UI/state.
+          isScanning.value = false;
+          if (Get.context != null) {
+            SnackBarUtil.showErrorSnackbar(
+              Get.context!,
+              'Bluetooth turned off. Scanning paused.',
+            );
+          }
+        },
       );
-
-      // Listen to scan results
-      _scanSubscription = FlutterBluePlus.scanResults.listen(
-        _processScanResults,
-        onError: (e) => _handleError('BLE scan error', e),
-      );
-
-      // Monitor adapter state
-      _adapterStateSubscription = FlutterBluePlus.adapterState.listen((state) {
-        if (state != BluetoothAdapterState.on) {
-          _handleBluetoothStateChange(state);
-        }
-      });
 
       // Start timeout monitoring for individual devices
       _startTimeoutMonitoring();
@@ -240,47 +273,6 @@ class PocNavigationController extends GetxController {
       debugPrint('✅ Continuous BLE scanning started successfully');
     } catch (e) {
       _handleError('Failed to start BLE scanning', e);
-    }
-  }
-
-  /// Ensure Bluetooth is ready
-  Future<void> _ensureBluetoothReady() async {
-    final adapterState = await FlutterBluePlus.adapterState.first;
-    if (adapterState != BluetoothAdapterState.on) {
-      if (adapterState == BluetoothAdapterState.off) {
-        await FlutterBluePlus.turnOn();
-      }
-
-      // Wait for Bluetooth to be ready
-      await FlutterBluePlus.adapterState
-          .where((state) => state == BluetoothAdapterState.on)
-          .first
-          .timeout(const Duration(seconds: 10));
-    }
-  }
-
-  /// Monitor Bluetooth state changes
-  void _handleBluetoothStateChange(BluetoothAdapterState state) {
-    // Don't restart if controller is disposed
-    if (_isDisposed) {
-      debugPrint(
-        '🔵 Bluetooth state changed but controller is disposed: $state',
-      );
-      return;
-    }
-
-    debugPrint('🔵 Bluetooth state changed: $state');
-
-    if (state == BluetoothAdapterState.on) {
-      // Restart scanning when Bluetooth comes back (only if not disposed)
-      if (!_isDisposed) {
-        _startContinuousBleScanning();
-      }
-    } else {
-      isScanning.value = false;
-      if (!_isDisposed && Get.context != null) {
-        SnackBarUtil.showErrorSnackbar(Get.context!, 'Bluetooth disconnected');
-      }
     }
   }
 
@@ -307,7 +299,7 @@ class PocNavigationController extends GetxController {
       lastSeen[waypointId] = now;
       detectionCount[waypointId] = (detectionCount[waypointId] ?? 0) + 1;
 
-      // Process RSSI with enhanced filtering
+      // Process RSSI with enhanced filter
       final previousRssi = smoothedRssi[waypointId] ?? -100.0;
       final newRssi = _processRssiWithFiltering(waypointId, rssi);
 
@@ -336,7 +328,7 @@ class PocNavigationController extends GetxController {
     final deviceId = device.remoteId.toString().toUpperCase();
     final waypointId = _deviceToWaypointMap[deviceId];
 
-    if (waypointId != null) {
+    if (kDebugMode && waypointId != null) {
       debugPrint('📱 Matched device: $deviceId -> $waypointId');
     }
 
@@ -362,30 +354,27 @@ class PocNavigationController extends GetxController {
           (1 - _rssiSmoothingFactor) * currentSmoothed;
     }
 
-    // Remove outliers if we have enough samples
-    final filteredHistory = history.length >= 3
-        ? _removeOutliers(history)
-        : history;
+    // Remove outliers
+    final filtered = _removeOutliers(history);
 
-    // Calculate weighted average favoring recent samples
-    double weightedSum = 0.0;
-    double weightSum = 0.0;
+    // Weighted moving average
+    double sum = 0;
+    double weight = 1;
+    double weightSum = 0;
 
-    for (int i = 0; i < filteredHistory.length; i++) {
-      final weight = math.pow(1.8, i).toDouble();
-      weightedSum += filteredHistory[i] * weight;
+    for (final value in filtered.reversed) {
+      sum += value * weight;
       weightSum += weight;
+      weight *= 0.7;
     }
 
-    final weightedAverage = weightSum > 0
-        ? weightedSum / weightSum
-        : rawRssi.toDouble();
+    final newSmoothed = sum / weightSum;
 
-    return _rssiSmoothingFactor * weightedAverage +
+    return _rssiSmoothingFactor * newSmoothed +
         (1 - _rssiSmoothingFactor) * currentSmoothed;
   }
 
-  /// Remove RSSI outliers using median filtering
+  /// Remove outliers based on median deviation
   List<int> _removeOutliers(List<int> readings) {
     if (readings.length < 3) return readings;
 
@@ -418,46 +407,34 @@ class PocNavigationController extends GetxController {
     _updateSignalQuality(waypointId, smoothedRssi);
   }
 
-  /// Calculate signal strength percentage from RSSI
   double _calculateSignalStrength(double rssi) {
     const minRssi = -100.0;
-    const maxRssi = -60.0;
-    return math.max(
-      _signalFloor,
-      ((rssi - minRssi) / (maxRssi - minRssi) * 100).clamp(0.0, 100.0),
-    );
+    const maxRssi = -40.0;
+    final normalized = ((rssi - minRssi) / (maxRssi - minRssi)).clamp(0.0, 1.0);
+    return normalized * 100.0;
   }
 
-  /// Update signal quality based on consistency
   void _updateSignalQuality(String waypointId, double smoothedRssi) {
     final history = _rssiHistory[waypointId]!;
-    if (history.length < 2) {
-      signalQuality[waypointId] = 0.3;
+    if (history.length < 3) {
+      signalQuality[waypointId] = 0.0;
       return;
     }
 
-    // Calculate variance for consistency score
     final mean = history.reduce((a, b) => a + b) / history.length;
     final variance =
-        history
-            .map((rssi) => math.pow(rssi - mean, 2))
-            .reduce((a, b) => a + b) /
+        history.map((v) => math.pow(v - mean, 2)).reduce((a, b) => a + b) /
         history.length;
-
-    final consistencyScore = math.max(0.0, 1.0 - (variance / 200.0));
-    final strengthScore = _calculateSignalStrength(smoothedRssi) / 100.0;
-    final detections = detectionCount[waypointId] ?? 0;
-    final frequencyScore = math.min(1.0, detections / 10.0);
+    final stdDev = math.sqrt(variance);
 
     final quality =
-        (consistencyScore * 0.4 + strengthScore * 0.4 + frequencyScore * 0.2)
-            .clamp(0.0, 1.0);
+        (1.0 - (stdDev / 20.0)).clamp(0.0, 1.0) *
+        (smoothedRssi > _waypointReachedThreshold ? 1.0 : 0.7);
 
-    signalQuality[waypointId] = quality;
+    signalQuality[waypointId] = quality * 100.0;
   }
 
-  /// Process waypoint detection with stable sampling
-  /// Process waypoint detection with stable sampling
+  /// Handle waypoint detection with stability check
   bool _processWaypointDetection(String waypointId, double rssi) {
     final waypoint = _waypointMap[waypointId]!;
     final now = DateTime.now();
@@ -475,151 +452,121 @@ class PocNavigationController extends GetxController {
     if (meetsThreshold) {
       _stableSampleCount[waypointId] = currentCount + 1;
 
-      if (currentCount + 1 >= _requiredStableSamples) {
+      if (_stableSampleCount[waypointId]! >= _requiredStableSamples) {
         if (!waypoint.reached) {
-          // First time reaching this waypoint
-          _handleWaypointReached(waypointId, now);
+          _handleWaypointReached(waypoint);
+          _lastStateChange[waypointId] = now;
           _stableSampleCount[waypointId] = 0;
           return true;
-        } else if (waypoint.reached && _isBackwardMovement(waypointId)) {
-          // User moved backward to previously reached waypoint
-          _handleWaypointUnreached(waypointId, now);
-          _stableSampleCount[waypointId] = 0;
-          return true;
+        } else {
+          // Check backward movement using history
+          if (_isBackwardMovement(waypointId)) {
+            _handleWaypointUnreached(waypoint);
+            _lastStateChange[waypointId] = now;
+            _stableSampleCount[waypointId] = 0;
+            return true;
+          }
         }
-        // If waypoint.reached && !_isBackwardMovement -> user staying at same waypoint, do nothing
       }
     } else {
-      _stableSampleCount[waypointId] = math.max(0, currentCount - 1);
+      _stableSampleCount[waypointId] = 0;
     }
 
     return false;
   }
 
-  /// Check if detecting this waypoint represents backward movement
+  /// Determine if user is moving backward based on waypoint order
   bool _isBackwardMovement(String waypointId) {
     if (reachedWaypointHistory.isEmpty) return false;
 
-    final currentWaypoint = _waypointMap[waypointId]!;
     final lastReachedId = reachedWaypointHistory.last;
     final lastWaypoint = _waypointMap[lastReachedId]!;
+    final currentWaypoint = _waypointMap[waypointId]!;
 
-    // Backward movement: current waypoint order < last reached waypoint order
     return currentWaypoint.order < lastWaypoint.order;
   }
 
-  /// Handle waypoint reached with bidirectional logic
-  void _handleWaypointReached(String waypointId, DateTime timestamp) {
-    final waypoint = _waypointMap[waypointId]!;
-    _lastStateChange[waypointId] = timestamp;
-
-    _updateWaypointProgression(waypointId);
-
-    final direction = isMovingBackward.value ? 'LEFT' : 'REACHED';
-    final emoji = isMovingBackward.value ? '⬅️' : '✅';
-
-    if (Get.context != null) {
-      SnackBarUtil.showSuccessSnackbar(
-        Get.context!,
-        '$emoji $direction ${waypoint.label}',
-      );
+  void _handleWaypointReached(BleWaypoint waypoint) {
+    waypoint.reached = true;
+    if (!reachedWaypointHistory.contains(waypoint.id)) {
+      reachedWaypointHistory.add(waypoint.id);
     }
 
-    debugPrint('🎯 WAYPOINT $direction: ${waypoint.label}');
-    debugPrint('   RSSI: ${smoothedRssi[waypointId]?.toStringAsFixed(1)}dBm');
-    debugPrint(
-      '   Strength: ${signalStrength[waypointId]?.toStringAsFixed(1)}%',
-    );
+    completedWaypoints.value = waypoint.order;
+    isMovingBackward.value = false;
+
+    _updateWaypointProgression(waypoint);
   }
 
-  /// Handle waypoint unreached (backward movement)
-  void _handleWaypointUnreached(String waypointId, DateTime timestamp) {
-    final waypoint = _waypointMap[waypointId]!;
-    _lastStateChange[waypointId] = timestamp;
+  void _handleWaypointUnreached(BleWaypoint waypoint) {
+    waypoint.reached = false;
 
-    // This means user returned to a previously reached waypoint
-    // Mark all waypoints after this one as unreached
-    _handleBackwardMovement(waypointId);
-
-    //SnackBarUtil.showSuccessSnackbar('⬅️ RETURNED TO ${waypoint.label}');
-    debugPrint('🎯 WAYPOINT LEFT: ${waypoint.label}');
-  }
-
-  /// Handle backward movement logic
-  void _handleBackwardMovement(String targetWaypointId) {
-    final targetIndex = reachedWaypointHistory.indexOf(targetWaypointId);
-    if (targetIndex == -1) return;
-
-    // Remove all waypoints after target from history
-    while (reachedWaypointHistory.length > targetIndex + 1) {
-      final removedId = reachedWaypointHistory.removeLast();
-      final removedWaypoint = _waypointMap[removedId]!;
-      removedWaypoint.reached = false;
-      removedWaypoint.reset();
-    }
+    _handleBackwardMovement(waypoint);
 
     isMovingBackward.value = true;
-    completedWaypoints.value = reachedWaypointHistory.length;
   }
 
-  /// Update waypoint progression with bidirectional support
-  void _updateWaypointProgression(String currentWaypointId) {
-    final currentWaypoint = _waypointMap[currentWaypointId]!;
+  void _handleBackwardMovement(BleWaypoint targetWaypoint) {
+    final targetOrder = targetWaypoint.order;
 
-    if (reachedWaypointHistory.isEmpty) {
-      // First waypoint reached
-      reachedWaypointHistory.add(currentWaypointId);
-      currentWaypoint.reached = true;
+    // Remove all waypoints after the target from history
+    reachedWaypointHistory.removeWhere((id) {
+      final wp = _waypointMap[id]!;
+      return wp.order > targetOrder;
+    });
+
+    // Mark all waypoints after the target as unreached
+    for (final waypoint in _waypoints) {
+      if (waypoint.order > targetOrder) {
+        waypoint.reached = false;
+      }
+    }
+
+    // Update completed waypoints count
+    completedWaypoints.value = targetOrder;
+  }
+
+  void _updateWaypointProgression(BleWaypoint waypoint) {
+    final currentOrder = waypoint.order;
+
+    // Forward movement: if this is the next waypoint in sequence
+    if (currentOrder == completedWaypoints.value + 1) {
+      completedWaypoints.value = currentOrder;
       isMovingBackward.value = false;
-    } else {
-      final lastReachedId = reachedWaypointHistory.last;
-      final lastWaypoint = _waypointMap[lastReachedId]!;
+      return;
+    }
 
-      if (currentWaypoint.order == lastWaypoint.order + 1) {
-        // Moving forward
-        reachedWaypointHistory.add(currentWaypointId);
-        currentWaypoint.reached = true;
-        isMovingBackward.value = false;
-      } else if (currentWaypoint.order == lastWaypoint.order - 1) {
-        // Moving backward
-        if (reachedWaypointHistory.isNotEmpty) {
-          final removedId = reachedWaypointHistory.removeLast();
-          final removedWaypoint = _waypointMap[removedId]!;
-          removedWaypoint.reached = false;
-          removedWaypoint.reset();
+    // Backward movement: if this waypoint is before the last completed one
+    if (currentOrder < completedWaypoints.value) {
+      _handleBackwardMovement(waypoint);
+      isMovingBackward.value = true;
+      return;
+    }
+
+    // Jump movement: user directly reached a non-adjacent waypoint
+    if (currentOrder > completedWaypoints.value + 1) {
+      // Mark all intermediate waypoints as reached
+      for (final intermediate in _waypoints) {
+        if (intermediate.order > completedWaypoints.value &&
+            intermediate.order < currentOrder) {
+          intermediate.reached = true;
+          if (!reachedWaypointHistory.contains(intermediate.id)) {
+            reachedWaypointHistory.add(intermediate.id);
+          }
         }
-        isMovingBackward.value = true;
-      } else if (currentWaypointId != lastReachedId) {
-        // Jump to non-adjacent waypoint
-        _handleWaypointJump(currentWaypointId);
       }
-    }
 
-    completedWaypoints.value = reachedWaypointHistory.length;
+      // Finally, mark the current waypoint as reached
+      if (!reachedWaypointHistory.contains(waypoint.id)) {
+        reachedWaypointHistory.add(waypoint.id);
+      }
+
+      completedWaypoints.value = currentOrder;
+      isMovingBackward.value = false;
+    }
   }
 
-  /// Handle waypoint jump (rebuild progression)
-  void _handleWaypointJump(String waypointId) {
-    final waypoint = _waypointMap[waypointId]!;
-
-    reachedWaypointHistory.clear();
-
-    // Mark all waypoints up to current as reached
-    for (final wp in _waypoints) {
-      if (wp.order <= waypoint.order) {
-        wp.reached = true;
-        reachedWaypointHistory.add(wp.id);
-      } else {
-        wp.reached = false;
-        wp.reset();
-      }
-    }
-
-    isMovingBackward.value = false;
-    debugPrint('🔄 Jump detected - rebuilt sequence to ${waypoint.label}');
-  }
-
-  /// Handle device timeouts with graceful degradation
+  /// Handle individual device timeout
   void _handleDeviceTimeouts() {
     final expiredThreshold = DateTime.now().subtract(_deviceTimeout);
 
@@ -647,139 +594,21 @@ class PocNavigationController extends GetxController {
 
   /// Update signal displays for UI
   void _updateSignalDisplays() {
-    // This method is called by the debounced worker
-    // Signals are already updated, just trigger UI refresh
+    smoothedRssi.refresh();
     signalStrength.refresh();
+    signalQuality.refresh();
   }
 
-  /// Handle GPS position updates
-  void _handleGpsUpdate(LatLng position) {
-    currentPosition.value = position;
-
-    final rawDistance = Geolocator.distanceBetween(
-      position.lat,
-      position.lng,
-      target.latitude,
-      target.longitude,
-    );
-
-    // Smooth distance updates
-    if (_smoothedDistanceMeters == null) {
-      _smoothedDistanceMeters = rawDistance;
-    } else {
-      _smoothedDistanceMeters =
-          0.4 * rawDistance + 0.6 * _smoothedDistanceMeters!;
-    }
-
-    displayDistanceMeters.value = _smoothedDistanceMeters;
-  }
-
-  /// Handle compass heading updates
-  void _handleHeadingUpdate(double? heading) {
-    headingDegrees.value = heading;
-  }
-
-  /// Check if destination is reached via GPS
   void _checkDestinationReached() {
-    if (hasShownSuccess.value) return;
-
     final distance = displayDistanceMeters.value;
-    if (distance == null) return;
-
-    if (distance <= _gpsDestinationThreshold) {
-      _stableGpsCount++;
-    } else {
-      _stableGpsCount = 0;
-    }
-
-    if (_stableGpsCount >= 3) {
-      _showDestinationReachedDialog();
-    }
-  }
-
-  /// Show destination reached dialog
-  void _showDestinationReachedDialog() {
-    if (hasShownSuccess.value) return;
-    hasShownSuccess.value = true;
-
-    Get.defaultDialog(
-      title: '🎉 Destination Reached!',
-      barrierDismissible: false,
-      content: Column(
-        children: [
-          Text('You have successfully navigated to "${target.name}".'),
-          const SizedBox(height: 12),
-          Text(
-            'Waypoints completed: ${completedWaypoints.value}/${_waypoints.length}',
-            style: const TextStyle(
-              color: Colors.grey,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
-      ),
-      confirm: TextButton(
-        onPressed: () {
-          Get.back();
-          Get.back();
-        },
-        child: const Text('Complete'),
-      ),
-    );
-  }
-
-  /// Check and request permissions
-  Future<void> _checkPermissions() async {
-    final permissions = [
-      Permission.location,
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-    ];
-
-    final denied = <Permission>[];
-
-    for (final permission in permissions) {
-      final status = await permission.request();
-      if (!status.isGranted) {
-        denied.add(permission);
+    if (distance != null && distance <= 5.0 && !hasShownSuccess.value) {
+      hasShownSuccess.value = true;
+      if (Get.context != null) {
+        SnackBarUtil.showSuccessSnackbar(
+          Get.context!,
+          'You have reached near your destination',
+        );
       }
-    }
-
-    if (denied.isEmpty) {
-      permissionsGranted.value = true;
-    } else {
-      _handlePermissionDenied(denied);
-    }
-  }
-
-  /// Handle permission denied
-  void _handlePermissionDenied(List<Permission> denied) {
-    final names = denied.map((p) => p.toString().split('.').last).join(', ');
-    if (Get.context != null) {
-      SnackBarUtil.showErrorSnackbar(
-        Get.context!,
-        'Permissions required: $names',
-      );
-    }
-
-    Get.defaultDialog(
-      title: 'Permissions Required',
-      content: Text('Please grant: $names'),
-      confirm: TextButton(
-        onPressed: () {
-          Get.back();
-          openAppSettings();
-        },
-        child: const Text('Settings'),
-      ),
-    );
-  }
-
-  /// Handle errors with logging
-  void _handleError(String message, dynamic error) {
-    debugPrint('❌ $message: $error');
-    if (Get.context != null) {
-      SnackBarUtil.showErrorSnackbar(Get.context!, '$message: $error');
     }
   }
 
@@ -805,22 +634,22 @@ class PocNavigationController extends GetxController {
 
     // Close any open snackbars first
     if (Get.context != null) {
-      SnackBarUtil.clearSnackBars(Get.context!);
+      try {
+        ScaffoldMessenger.of(Get.context!).clearSnackBars();
+      } catch (e) {
+        debugPrint('⚠️ Error clearing snackbars: $e');
+      }
     }
 
-    // Cancel scan subscription FIRST - this stops processing scan results
-    _scanSubscription?.cancel();
-    _scanSubscription = null;
-
-    // Cancel adapter state subscription
-    _adapterStateSubscription?.cancel();
-    _adapterStateSubscription = null;
-
-    // Cancel all timers
-    _timeoutTimer?.cancel();
-    _timeoutTimer = null;
-    _uiUpdateTimer?.cancel();
-    _uiUpdateTimer = null;
+    // Cancel timers
+    try {
+      _timeoutTimer?.cancel();
+      _timeoutTimer = null;
+      _uiUpdateTimer?.cancel();
+      _uiUpdateTimer = null;
+    } catch (e) {
+      debugPrint('⚠️ Error cancelling timers: $e');
+    }
 
     // Dispose workers
     _rssiWorker?.dispose();
@@ -828,22 +657,11 @@ class PocNavigationController extends GetxController {
     _distanceWorker?.dispose();
     _distanceWorker = null;
 
-    // Stop BLE scanning - call synchronously and handle errors
+    // Stop BLE scanning via service
     try {
-      // Stop scan immediately - don't wait for async completion
-      FlutterBluePlus.stopScan()
-          .then((_) {
-            debugPrint('✅ BLE scanning stopped successfully');
-          })
-          .catchError((e) {
-            debugPrint('⚠️ Error stopping scan: $e');
-            // Try one more time
-            FlutterBluePlus.stopScan().catchError((e2) {
-              debugPrint('⚠️ Second attempt to stop scan also failed: $e2');
-            });
-          });
+      _bleService.dispose();
     } catch (e) {
-      debugPrint('⚠️ Exception while stopping scan: $e');
+      debugPrint('⚠️ Error disposing BLE service: $e');
     }
 
     // Stop GPS tracking
@@ -879,9 +697,17 @@ class PocNavigationController extends GetxController {
     final heading = headingDegrees.value;
 
     if (position == null || heading == null) {
-      debugPrint(
-        '🧭 Navigation: Missing data - Position: $position, Heading: $heading',
-      );
+      // Only log once per second to avoid spam
+      if (kDebugMode) {
+        final now = DateTime.now();
+        if (_lastNavLog == null ||
+            now.difference(_lastNavLog!) > const Duration(seconds: 1)) {
+          debugPrint(
+            '🧭 Navigation: Waiting for GPS fix - Position: ${position != null ? "✓" : "null"}, Heading: ${heading != null ? "✓" : "null"}',
+          );
+          _lastNavLog = now;
+        }
+      }
       return 0.0;
     }
 
@@ -896,133 +722,155 @@ class PocNavigationController extends GetxController {
     final radians = relativeDeg * (math.pi / 180.0);
 
     // Debug logs for compass testing
-    debugPrint('🧭 === COMPASS DEBUG ===');
-    debugPrint(
-      '📍 Current: ${position.lat.toStringAsFixed(6)}, ${position.lng.toStringAsFixed(6)}',
-    );
-    debugPrint(
-      '🎯 Target: ${target.latitude.toStringAsFixed(6)}, ${target.longitude.toStringAsFixed(6)}',
-    );
-    debugPrint('📐 True Bearing: ${bearing.toStringAsFixed(1)}°');
-    debugPrint('🧭 Device Heading: ${heading.toStringAsFixed(1)}°');
-    debugPrint('➡️ Relative Direction: ${relativeDeg.toStringAsFixed(1)}°');
-    debugPrint(
-      '🔄 Arrow Rotation: ${(radians * 180 / math.pi).toStringAsFixed(1)}°',
-    );
-    debugPrint('📏 Distance: ${distanceText}');
-    debugPrint('🧭 ==================');
+    if (kDebugMode) {
+      debugPrint('🧭 === COMPASS DEBUG ===');
+      debugPrint(
+        '📍 Current: ${position.lat.toStringAsFixed(6)}, ${position.lng.toStringAsFixed(6)}',
+      );
+      debugPrint(
+        '🎯 Target: ${target.latitude.toStringAsFixed(6)}, ${target.longitude.toStringAsFixed(6)}',
+      );
+      debugPrint('📐 True Bearing: ${bearing.toStringAsFixed(1)}°');
+      debugPrint('🧭 Device Heading: ${heading.toStringAsFixed(1)}°');
+      debugPrint('➡️ Relative Direction: ${relativeDeg.toStringAsFixed(1)}°');
+      debugPrint(
+        '🔄 Arrow Rotation: ${(radians * 180 / math.pi).toStringAsFixed(1)}°',
+      );
+      debugPrint('📏 Distance: ${distanceText}');
+      debugPrint('🧭 ==================');
+    }
 
     return radians;
   }
 
-  /// Get distance text for display
-  String get distanceText => displayDistanceMeters.value == null
-      ? 'Calculating...'
-      : '${displayDistanceMeters.value!.toStringAsFixed(1)} m away';
+  /// Get distance text for UI
+  String get distanceText {
+    final distance = displayDistanceMeters.value ?? 0.0;
 
-  /// Get navigation instructions
-  String get navigationInstructions {
-    final directionInfo = isMovingBackward.value ? ' - Moving backward ⬅️' : '';
-    return hasHeading
-        ? 'Follow the arrow to your destination.$directionInfo'
-        : 'Calibrate compass by moving phone in figure-8.$directionInfo';
-  }
-
-  /// Get signal percentage for waypoint
-  int signalPercentFor(String waypointId) {
-    return (signalStrength[waypointId] ?? _signalFloor).round().clamp(0, 100);
-  }
-
-  /// Get signal quality label
-  String signalQualityLabelFor(String waypointId) {
-    final quality = signalQuality[waypointId] ?? 0.0;
-    if (quality >= 0.8) return 'Excellent';
-    if (quality >= 0.6) return 'Very Good';
-    if (quality >= 0.4) return 'Good';
-    if (quality >= 0.2) return 'Fair';
-    return 'Weak';
-  }
-
-  /// Get signal color for UI
-  Color signalColorFor(String waypointId) {
-    final waypoint = _waypointMap[waypointId];
-    if (waypoint?.reached == true) return Colors.green;
-
-    final strength = signalStrength[waypointId] ?? _signalFloor;
-    if (strength >= 80) return Colors.green;
-    if (strength >= 60) return Colors.lightGreen;
-    if (strength >= 40) return Colors.orange;
-    if (strength >= 20) return Colors.deepOrange;
-    return Colors.red;
-  }
-
-  /// Calculate user position on progress line
-  UserProgressPosition calculateUserPositionOnLineReversed({
-    required List<BleWaypoint> sortedWaypoints,
-    required double lineHeight,
-    required double lineTop,
-  }) {
-    if (sortedWaypoints.isEmpty) {
-      return const UserProgressPosition(currentY: 0, completedHeight: 0);
-    }
-
-    final lastReachedIndex = reachedWaypointHistory.isEmpty
-        ? -1
-        : sortedWaypoints.indexWhere(
-            (w) => w.id == reachedWaypointHistory.last,
-          );
-
-    final segmentHeight = lineHeight / (sortedWaypoints.length + 1);
-
-    double completedHeight = 0.0;
-    if (lastReachedIndex >= 0) {
-      final reversedIndex = sortedWaypoints.length - 1 - lastReachedIndex;
-      completedHeight = segmentHeight * (reversedIndex + 1);
-    }
-
-    double currentY;
-    if (lastReachedIndex == sortedWaypoints.length - 1) {
-      currentY = lineTop;
-    } else if (lastReachedIndex < 0) {
-      currentY = lineTop + lineHeight;
+    if (distance >= 1000) {
+      final km = distance / 1000;
+      return '${km.toStringAsFixed(2)} km';
     } else {
-      final nextIndex = lastReachedIndex + 1;
-      final nextWaypoint = sortedWaypoints[nextIndex];
+      return '${distance.toStringAsFixed(0)} m';
+    }
+  }
 
-      final progress = ((signalStrength[nextWaypoint.id] ?? _signalFloor) / 100)
-          .clamp(0.0, 1.0);
+  List<BleWaypoint> get waypoints => _waypoints;
 
-      final reversedLastIndex = sortedWaypoints.length - 1 - lastReachedIndex;
-      final reversedNextIndex = sortedWaypoints.length - 1 - nextIndex;
-
-      final lastY = lineTop + segmentHeight * (reversedLastIndex + 1);
-      final nextY = lineTop + segmentHeight * (reversedNextIndex + 1);
-
-      currentY = lastY + (nextY - lastY) * progress;
+  /// Get user progress position on the line (0 to 1)
+  UserProgressPosition calculateUserPositionOnLineReversed(double height) {
+    if (_waypoints.isEmpty) {
+      return UserProgressPosition(currentY: height, targetY: height);
     }
 
-    return UserProgressPosition(
-      currentY: currentY,
-      completedHeight: completedHeight,
+    // Find nearest active waypoint based on signal strength
+    String? strongestId;
+    double strongestStrength = 0;
+
+    signalStrength.forEach((waypointId, strength) {
+      if (strength > strongestStrength) {
+        strongestStrength = strength;
+        strongestId = waypointId;
+      }
+    });
+
+    if (strongestId == null) {
+      return UserProgressPosition(currentY: height, targetY: height);
+    }
+
+    final strongestWaypoint = _waypointMap[strongestId]!;
+    final index = _waypoints.indexOf(strongestWaypoint);
+
+    // Position along the line (reverse)
+    final segmentCount = _waypoints.length - 1;
+    if (segmentCount <= 0) {
+      return UserProgressPosition(currentY: height, targetY: height);
+    }
+
+    final segmentHeight = height / segmentCount;
+
+    final currentY = height - (index * segmentHeight);
+    final targetY = height - ((_waypoints.length - 1) * segmentHeight);
+
+    return UserProgressPosition(currentY: currentY, targetY: targetY);
+  }
+
+  /// Distance helper for UI
+  double calculateDistanceToTarget(
+    double userLat,
+    double userLng,
+    double targetLat,
+    double targetLng,
+  ) {
+    return Geolocator.distanceBetween(userLat, userLng, targetLat, targetLng);
+  }
+
+  /// Permissions handling
+  Future<bool> _checkPermissions() async {
+    final permissions = [
+      Permission.location,
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+    ];
+
+    final denied = <Permission>[];
+
+    for (final permission in permissions) {
+      final status = await permission.request();
+      if (!status.isGranted) {
+        denied.add(permission);
+      }
+    }
+
+    if (denied.isEmpty) {
+      permissionsGranted.value = true;
+      return true;
+    } else {
+      permissionsGranted.value = false;
+      _handlePermissionDenied(denied);
+      return false;
+    }
+  }
+
+  /// Handle permission denied
+  void _handlePermissionDenied(List<Permission> denied) {
+    final names = denied.map((p) => p.toString().split('.').last).join(', ');
+    if (Get.context != null) {
+      SnackBarUtil.showErrorSnackbar(
+        Get.context!,
+        'Permissions required: $names',
+      );
+    }
+
+    Get.defaultDialog(
+      title: 'Permissions Required',
+      content: Text('Please grant: $names'),
+      confirm: TextButton(
+        onPressed: () {
+          Get.back();
+          openAppSettings();
+        },
+        child: const Text('Open Settings'),
+      ),
+      cancel: TextButton(
+        onPressed: () => Get.back(),
+        child: const Text('Cancel'),
+      ),
     );
   }
 
-  /// Public method to restart scanning if needed
-  Future<void> restartScanning() async {
-    debugPrint('🔄 Manual scan restart requested');
-    _cleanup();
-    await Future.delayed(const Duration(milliseconds: 500));
-    await _startContinuousBleScanning();
+  void _handleError(String message, dynamic error) {
+    debugPrint('❌ $message: $error');
+    if (Get.context != null) {
+      SnackBarUtil.showErrorSnackbar(Get.context!, '$message: $error');
+    }
   }
 }
 
 /// User position data class
 class UserProgressPosition {
   final double currentY;
-  final double completedHeight;
+  final double targetY;
 
-  const UserProgressPosition({
-    required this.currentY,
-    required this.completedHeight,
-  });
+  const UserProgressPosition({required this.currentY, required this.targetY});
 }

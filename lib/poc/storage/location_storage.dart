@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import '../models/saved_location.dart';
 import '../utils/pref_utiles.dart';
 
@@ -10,8 +12,27 @@ class LocationStorage {
     final data = prefs.getString(_kKey);
     if (data == null || data.isEmpty) return [];
     try {
-      return SavedLocation.decodeList(data);
-    } catch (_) {
+      final locations = SavedLocation.decodeList(data);
+      // Validate and filter out invalid locations
+      return locations.where((loc) {
+        final isValid = loc.latitude.isFinite &&
+            loc.longitude.isFinite &&
+            loc.latitude >= -90 &&
+            loc.latitude <= 90 &&
+            loc.longitude >= -180 &&
+            loc.longitude <= 180 &&
+            loc.name.isNotEmpty;
+        if (!isValid) {
+          // Log invalid location for debugging
+          debugPrint(
+            '⚠️ Invalid location found and filtered: ${loc.name} '
+            '(${loc.latitude}, ${loc.longitude})',
+          );
+        }
+        return isValid;
+      }).toList();
+    } catch (e) {
+      debugPrint('❌ Error loading locations: $e');
       return [];
     }
   }

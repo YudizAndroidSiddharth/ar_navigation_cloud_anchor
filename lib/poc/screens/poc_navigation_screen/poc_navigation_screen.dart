@@ -169,16 +169,6 @@ class _PocNavigationScreenState extends State<PocNavigationScreen> {
             ),
           ),
           const SizedBox(height: 8),
-          Obx(
-            () => Text(
-              controller.navigationInstructions,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.9),
-                fontSize: 14,
-              ),
-            ),
-          ),
         ],
       ),
     );
