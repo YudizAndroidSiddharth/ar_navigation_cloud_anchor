@@ -85,7 +85,7 @@ class SignalAnalyticsCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       Text(
-                        '$percent%',
+                        '${percent.round()}%',
                         style: theme.textTheme.headlineMedium?.copyWith(
                           color: color,
                           fontWeight: FontWeight.bold,
@@ -358,7 +358,7 @@ class SignalAnalyticsCard extends StatelessWidget {
                   ),
                 ),
               Text(
-                '$percent%',
+                '${percent.round()}%',
                 style: TextStyle(
                   color: color,
                   fontWeight: FontWeight.bold,

@@ -865,6 +865,47 @@ class PocNavigationController extends GetxController {
       SnackBarUtil.showErrorSnackbar(Get.context!, '$message: $error');
     }
   }
+
+  /// Get signal color based on signal strength
+  Color signalColorFor(String waypointId) {
+    final strength = signalStrength[waypointId] ?? 0.0;
+    if (strength >= 85) return Colors.green;
+    if (strength >= 65) return Colors.lightGreen;
+    if (strength >= 45) return Colors.orange;
+    if (strength >= 25) return Colors.deepOrange;
+    return Colors.red;
+  }
+
+  /// Get signal strength percentage
+  double signalPercentFor(String waypointId) {
+    return signalStrength[waypointId] ?? 0.0;
+  }
+
+  /// Get signal quality label
+  String signalQualityLabelFor(String waypointId) {
+    final quality = signalQuality[waypointId] ?? 0.0;
+    final rssi = smoothedRssi[waypointId] ?? -100.0;
+
+    if (quality >= 80 && rssi >= _waypointReachedThreshold) {
+      return 'Excellent';
+    } else if (quality >= 60) {
+      return 'Good';
+    } else if (quality >= 40) {
+      return 'Fair';
+    } else if (quality >= 20) {
+      return 'Weak';
+    } else {
+      return 'Poor';
+    }
+  }
+
+  /// Restart scanning (useful for permission requests)
+  Future<void> restartScanning() async {
+    final granted = await _checkPermissions();
+    if (granted) {
+      await _startNavigation();
+    }
+  }
 }
 
 /// User position data class
