@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../controller/poc_navigation_controller.dart';
+import '../../../utils/geo_utils.dart';
 
 class MiniMapWidget extends StatelessWidget {
   final PocNavigationController controller;
@@ -34,57 +35,30 @@ class MiniMapWidget extends StatelessWidget {
               final mapSize = Size(constraints.maxWidth, constraints.maxHeight);
 
               return Obx(() {
-                // Use distance-based vertical layout: user anchored near bottom-center,
-                // destination above the user, scaled by remaining distance.
-                final hasUserPosition =
-                    controller.mapDisplayPosition.value != null;
-                final distance = controller.displayDistanceMeters.value;
+                // Get or calculate map bounds only once – controller locks them
+                // after the initial samples so the destination stays fixed
+                // and the user moves within those bounds.
+                final bounds =
+                    controller.mapBounds.value ??
+                    controller.calculateMapBounds(
+                      userPosition: controller.mapDisplayPosition.value,
+                    );
 
-                if (!hasUserPosition || distance == null) {
-                  // GPS not ready yet – just show the map background.
-                  return Stack(
-                    children: [
-                      Positioned.fill(
-                        child: Image.asset(mapAssetPath, fit: BoxFit.cover),
-                      ),
-                      Positioned.fill(
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [
-                                Colors.black.withOpacity(0.05),
-                                Colors.black.withOpacity(0.35),
-                              ],
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  );
-                }
-
-                // Anchor user near bottom-center.
-                final centerX = mapSize.width / 2;
-                final bottomY = mapSize.height * 0.82;
-                final topY = mapSize.height * 0.18;
-                final availableHeight = bottomY - topY;
-
-                // Map distance to [0, 1] with saturation so very large distances
-                // still keep the destination within the view.
-                const maxDisplayDistanceMeters = 80.0;
-                final clampedDistance = distance.clamp(
-                  0.0,
-                  maxDisplayDistanceMeters,
+                final destination = LatLng(
+                  controller.target.latitude,
+                  controller.target.longitude,
                 );
-                final distanceRatio =
-                    (clampedDistance / maxDisplayDistanceMeters);
+                final destinationOffset = controller.latLngToPixel(
+                  destination,
+                  bounds,
+                  mapSize,
+                );
 
-                final userOffset = Offset(centerX, bottomY);
-                final destinationY =
-                    bottomY - (distanceRatio * availableHeight);
-                final destinationOffset = Offset(centerX, destinationY);
+                // Always use the smoothed mapDisplayPosition for the user.
+                final userPosition = controller.mapDisplayPosition.value;
+                final Offset? userOffset = userPosition != null
+                    ? controller.latLngToPixel(userPosition, bounds, mapSize)
+                    : null;
 
                 return Stack(
                   children: [
@@ -106,7 +80,7 @@ class MiniMapWidget extends StatelessWidget {
                       ),
                     ),
                     _buildDestinationMarker(destinationOffset),
-                    _buildUserMarker(userOffset),
+                    if (userOffset != null) _buildUserMarker(userOffset),
                   ],
                 );
               });
