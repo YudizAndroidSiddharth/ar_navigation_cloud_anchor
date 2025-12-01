@@ -39,7 +39,17 @@ class PocNavigationController extends GetxController {
 
   // Distance smoothing
   static const int _minStableGpsSamples = 3;
-  static const double _distanceSmoothingFactor = 0.6;
+  static const double _distanceSmoothingFactor =
+      0.35; // Reduced for more stability
+  static const double _mapSmoothingFactor = 0.08;
+  static const double _mapJitterThresholdMeters = 8.0;
+  static const int _initialSamplesForBounds = 4;
+  static const double _minMapSpanDegrees = 0.0008;
+  static const double _minDistanceChangeMeters =
+      2.0; // Minimum change to update distance
+  static const Duration _distanceUpdateDebounce = Duration(
+    milliseconds: 500,
+  ); // Debounce distance updates
 
   // Signal strength display
   static const double _signalFloor = 0.0;
@@ -52,10 +62,12 @@ class PocNavigationController extends GetxController {
   final totalDetections = 0.obs;
   final permissionsGranted = false.obs;
   final currentPosition = Rxn<LatLng>();
+  final mapDisplayPosition = Rxn<LatLng>();
   final headingDegrees = Rxn<double>();
   final displayDistanceMeters = Rxn<double>();
   final hasShownSuccess = false.obs;
   final isScanning = false.obs;
+  final mapBounds = Rxn<MapBounds>();
 
   // BLE Signal State
   final RxMap<String, double> smoothedRssi = <String, double>{}.obs;
@@ -104,6 +116,10 @@ class PocNavigationController extends GetxController {
 
   double? _smoothedDistanceMeters;
   int _stableGpsCount = 0;
+  final List<LatLng> _initialMapSamples = [];
+  bool _mapBoundsLocked = false;
+  Timer? _distanceUpdateTimer;
+  double? _lastDisplayedDistance;
 
   @override
   void onInit() {
@@ -187,17 +203,38 @@ class PocNavigationController extends GetxController {
 
   /// Start GPS tracking
   Future<void> _startGpsTracking() async {
-    await _gpsService.startTracking(
-      locationService: _locationService,
-      onPosition: _handleGpsUpdate,
-      onHeading: _handleHeadingUpdate,
-    );
+    debugPrint('🛰️ Initializing GPS tracking...');
+    try {
+      await _gpsService.startTracking(
+        locationService: _locationService,
+        onPosition: _handleGpsUpdate,
+        onHeading: _handleHeadingUpdate,
+      );
+      debugPrint('✅ GPS tracking initialized successfully');
+    } catch (e, st) {
+      debugPrint('❌ Failed to start GPS tracking: $e');
+      debugPrint('Stack trace: $st');
+      _handleError('GPS tracking failed', e);
+      rethrow;
+    }
   }
 
   /// Handle GPS updates with smoothing
   void _handleGpsUpdate(LatLng position) {
+    debugPrint(
+      '🔄 GPS update received: lat=${position.lat.toStringAsFixed(6)}, lng=${position.lng.toStringAsFixed(6)}',
+    );
     currentPosition.value = position;
+    _updateMapDisplayPosition(position);
 
+    // Calculate distance from smoothed mapDisplayPosition (updated above)
+    // This ensures distance is stable and matches what's shown on the map
+    final smoothedPosition = mapDisplayPosition.value ?? position;
+    _updateDistanceFromPosition(smoothedPosition);
+  }
+
+  /// Update distance calculation from smoothed position
+  void _updateDistanceFromPosition(LatLng position) {
     final distanceMeters = Geolocator.distanceBetween(
       position.lat,
       position.lng,
@@ -209,6 +246,7 @@ class PocNavigationController extends GetxController {
     if (_smoothedDistanceMeters == null) {
       _smoothedDistanceMeters = distanceMeters;
       _stableGpsCount = 1;
+      _lastDisplayedDistance = distanceMeters;
     } else {
       // Update smoothed distance using weighted average
       _smoothedDistanceMeters =
@@ -219,7 +257,26 @@ class PocNavigationController extends GetxController {
 
     // Only update display distance once we have enough stable samples
     if (_stableGpsCount >= _minStableGpsSamples) {
-      displayDistanceMeters.value = _smoothedDistanceMeters;
+      // Check if change is significant enough to update
+      final change = _lastDisplayedDistance != null
+          ? (_smoothedDistanceMeters! - _lastDisplayedDistance!).abs()
+          : double.infinity;
+
+      if (change >= _minDistanceChangeMeters ||
+          _lastDisplayedDistance == null) {
+        // Update immediately if change is significant
+        _lastDisplayedDistance = _smoothedDistanceMeters;
+        displayDistanceMeters.value = _smoothedDistanceMeters;
+      } else {
+        // Debounce small changes
+        _distanceUpdateTimer?.cancel();
+        _distanceUpdateTimer = Timer(_distanceUpdateDebounce, () {
+          if (!_isDisposed && _smoothedDistanceMeters != null) {
+            _lastDisplayedDistance = _smoothedDistanceMeters;
+            displayDistanceMeters.value = _smoothedDistanceMeters;
+          }
+        });
+      }
     }
   }
 
@@ -227,6 +284,69 @@ class PocNavigationController extends GetxController {
   void _handleHeadingUpdate(double? heading) {
     if (heading == null) return;
     headingDegrees.value = heading;
+  }
+
+  void _updateMapDisplayPosition(LatLng position) {
+    if (mapDisplayPosition.value == null) {
+      mapDisplayPosition.value = position;
+      _accumulateInitialMapSample(position);
+      return;
+    }
+
+    final previous = mapDisplayPosition.value!;
+    final deltaMeters = Geolocator.distanceBetween(
+      previous.lat,
+      previous.lng,
+      position.lat,
+      position.lng,
+    );
+
+    // Always update mapDisplayPosition with smoothing, but use less smoothing for small movements
+    // This prevents jumping while still allowing smooth updates
+    final smoothingFactor = deltaMeters < _mapJitterThresholdMeters
+        ? _mapSmoothingFactor *
+              0.5 // Use less smoothing for small movements
+        : _mapSmoothingFactor;
+
+    final smoothed = lerpLatLng(previous, position, smoothingFactor);
+    mapDisplayPosition.value = smoothed;
+
+    // Only accumulate samples for bounds calculation if bounds are not locked
+    if (!_mapBoundsLocked) {
+      _accumulateInitialMapSample(smoothed);
+    }
+  }
+
+  void _accumulateInitialMapSample(LatLng position) {
+    // If bounds are already locked, don't accumulate samples
+    if (_mapBoundsLocked) {
+      return;
+    }
+
+    // If bounds already exist, lock them immediately
+    if (mapBounds.value != null) {
+      _mapBoundsLocked = true;
+      return;
+    }
+
+    _initialMapSamples.add(position);
+    if (_initialMapSamples.length >= _initialSamplesForBounds) {
+      final averaged = _averageLatLng(_initialMapSamples);
+      mapBounds.value = calculateMapBounds(userPosition: averaged);
+      _mapBoundsLocked = true;
+      debugPrint('🗺️ Map bounds calculated and locked');
+    }
+  }
+
+  LatLng _averageLatLng(List<LatLng> points) {
+    double sumLat = 0;
+    double sumLng = 0;
+    for (final p in points) {
+      sumLat += p.lat;
+      sumLng += p.lng;
+    }
+    final count = points.isEmpty ? 1 : points.length;
+    return LatLng(sumLat / count, sumLng / count);
   }
 
   /// Start continuous BLE scanning via BleNavigationService
@@ -268,22 +388,6 @@ class PocNavigationController extends GetxController {
       debugPrint('✅ Continuous BLE scanning started successfully');
     } catch (e) {
       _handleError('Failed to start BLE scanning', e);
-    }
-  }
-
-  /// Ensure Bluetooth is ready
-  Future<void> _ensureBluetoothReady() async {
-    final adapterState = await FlutterBluePlus.adapterState.first;
-    if (adapterState != BluetoothAdapterState.on) {
-      if (adapterState == BluetoothAdapterState.off) {
-        await FlutterBluePlus.turnOn();
-      }
-
-      // Wait for Bluetooth to be ready
-      await FlutterBluePlus.adapterState
-          .where((state) => state == BluetoothAdapterState.on)
-          .first
-          .timeout(const Duration(seconds: 10));
     }
   }
 
@@ -658,6 +762,8 @@ class PocNavigationController extends GetxController {
       _timeoutTimer = null;
       _uiUpdateTimer?.cancel();
       _uiUpdateTimer = null;
+      _distanceUpdateTimer?.cancel();
+      _distanceUpdateTimer = null;
     } catch (e) {
       debugPrint('⚠️ Error cancelling timers: $e');
     }
@@ -810,6 +916,20 @@ class PocNavigationController extends GetxController {
 
   /// Permissions handling
   Future<bool> _checkPermissions() async {
+    // First check if location services are enabled
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      debugPrint('⚠️ Location services are disabled');
+      permissionsGranted.value = false;
+      if (Get.context != null) {
+        SnackBarUtil.showErrorSnackbar(
+          Get.context!,
+          'Please enable GPS/location services',
+        );
+      }
+      return false;
+    }
+
     final permissions = [
       Permission.location,
       Permission.bluetoothScan,
@@ -827,6 +947,7 @@ class PocNavigationController extends GetxController {
 
     if (denied.isEmpty) {
       permissionsGranted.value = true;
+      debugPrint('✅ All permissions granted and location services enabled');
       return true;
     } else {
       permissionsGranted.value = false;
@@ -892,6 +1013,79 @@ class PocNavigationController extends GetxController {
     return 'Very Weak';
   }
 
+  MapBounds calculateMapBounds({LatLng? userPosition}) {
+    // If bounds are already locked, return existing bounds
+    if (_mapBoundsLocked && mapBounds.value != null) {
+      return mapBounds.value!;
+    }
+
+    // If bounds exist but not locked, return them (shouldn't happen, but safety check)
+    if (mapBounds.value != null) return mapBounds.value!;
+
+    final userPoint =
+        userPosition ?? mapDisplayPosition.value ?? currentPosition.value;
+    final destination = LatLng(target.latitude, target.longitude);
+    final points = <LatLng>[destination];
+    if (userPoint != null) {
+      points.add(userPoint);
+    }
+
+    final baseBounds = MapBounds.fromPoints(points)
+        .enforceMinimumSpan(minSpan: _minMapSpanDegrees)
+        .withPadding(
+          paddingFactor: 0.10,
+          bottomBiasFactor: userPoint != null ? 0.10 : 0.05,
+        );
+
+    if (userPoint == null) {
+      return baseBounds;
+    }
+
+    final latRange = math.max(baseBounds.latRange, 1e-9);
+    final userNormalized = (userPoint.lat - baseBounds.minLat) / latRange;
+    final destinationNormalized =
+        (destination.lat - baseBounds.minLat) / latRange;
+
+    const desiredUserNormalized = 0.12; // keep user near bottom edge
+    final shiftNormalized = userNormalized - desiredUserNormalized;
+
+    final minShift = destinationNormalized - 0.95;
+    final maxShift = destinationNormalized - 0.05;
+    final clampedShift = shiftNormalized.clamp(minShift, maxShift);
+
+    final latShift = clampedShift * latRange;
+
+    final anchoredBounds = MapBounds(
+      minLat: baseBounds.minLat + latShift,
+      maxLat: baseBounds.maxLat + latShift,
+      minLng: baseBounds.minLng,
+      maxLng: baseBounds.maxLng,
+    );
+
+    mapBounds.value = anchoredBounds;
+    _mapBoundsLocked = true;
+    return anchoredBounds;
+  }
+
+  Offset latLngToPixel(LatLng point, MapBounds bounds, Size mapSize) {
+    final latRange = math.max(bounds.latRange, 1e-9);
+    final lngRange = math.max(bounds.lngRange, 1e-9);
+
+    final normalizedX = (point.lng - bounds.minLng) / lngRange;
+    final normalizedY = (point.lat - bounds.minLat) / latRange;
+
+    final clampedX = normalizedX.clamp(0.0, 1.0).toDouble();
+    final clampedY = normalizedY.clamp(0.0, 1.0).toDouble();
+
+    final dx = clampedX * mapSize.width;
+    // Map latitude directly to Y (top = smaller lat, bottom = larger lat)
+    // so that the destination appears towards the top when it is “ahead”
+    // of the user in latitude.
+    final dy = clampedY * mapSize.height;
+
+    return Offset(dx, dy);
+  }
+
   void _handleError(String message, dynamic error) {
     debugPrint('❌ $message: $error');
     if (Get.context != null) {
@@ -906,4 +1100,73 @@ class UserProgressPosition {
   final double targetY;
 
   const UserProgressPosition({required this.currentY, required this.targetY});
+}
+
+class MapBounds {
+  final double minLat;
+  final double maxLat;
+  final double minLng;
+  final double maxLng;
+
+  const MapBounds({
+    required this.minLat,
+    required this.maxLat,
+    required this.minLng,
+    required this.maxLng,
+  });
+
+  double get latRange => (maxLat - minLat).abs();
+  double get lngRange => (maxLng - minLng).abs();
+
+  factory MapBounds.fromPoints(List<LatLng> points) {
+    double minLat = points.first.lat;
+    double maxLat = points.first.lat;
+    double minLng = points.first.lng;
+    double maxLng = points.first.lng;
+
+    for (final point in points.skip(1)) {
+      minLat = math.min(minLat, point.lat);
+      maxLat = math.max(maxLat, point.lat);
+      minLng = math.min(minLng, point.lng);
+      maxLng = math.max(maxLng, point.lng);
+    }
+
+    return MapBounds(
+      minLat: minLat,
+      maxLat: maxLat,
+      minLng: minLng,
+      maxLng: maxLng,
+    );
+  }
+
+  MapBounds enforceMinimumSpan({double minSpan = 0.0001}) {
+    final adjustedLatRange = latRange < minSpan ? minSpan : latRange;
+    final adjustedLngRange = lngRange < minSpan ? minSpan : lngRange;
+
+    final latDelta = (adjustedLatRange - latRange) / 2;
+    final lngDelta = (adjustedLngRange - lngRange) / 2;
+
+    return MapBounds(
+      minLat: minLat - latDelta,
+      maxLat: maxLat + latDelta,
+      minLng: minLng - lngDelta,
+      maxLng: maxLng + lngDelta,
+    );
+  }
+
+  MapBounds withPadding({
+    double paddingFactor = 0.1,
+    double bottomBiasFactor = 0.0,
+  }) {
+    final latPadding = latRange * paddingFactor;
+    final lngPadding = lngRange * paddingFactor;
+    final bottomPadding = latRange * bottomBiasFactor;
+
+    return MapBounds(
+      minLat: minLat - latPadding - bottomPadding,
+      maxLat: maxLat + latPadding,
+      minLng: minLng - lngPadding,
+      maxLng: maxLng + lngPadding,
+    );
+  }
 }

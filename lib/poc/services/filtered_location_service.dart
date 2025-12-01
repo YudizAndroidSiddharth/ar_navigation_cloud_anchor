@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../utils/geo_utils.dart';
@@ -103,10 +104,12 @@ class FilteredLocationService {
         .listen(
           _onRawPosition,
           onError: (e, st) {
-            // Keep the stream alive; just log for debugging.
-            // In production, you might forward this to a logger.
-            // print('FilteredLocationService error: $e');
+            // Log GPS stream errors for debugging
+            debugPrint('❌ FilteredLocationService GPS stream error: $e');
+            debugPrint('Stack trace: $st');
+            // Keep the stream alive, but log the error
           },
+          cancelOnError: false, // Keep stream alive even on errors
         );
   }
 
@@ -129,8 +132,19 @@ class FilteredLocationService {
     // 0) Accuracy filter: discard very low-quality readings
     final accuracy = pos.accuracy;
     if (accuracy.isFinite && accuracy > accuracyThresholdMeters) {
+      debugPrint(
+        '📍 GPS position filtered out: accuracy ${accuracy.toStringAsFixed(1)}m > threshold ${accuracyThresholdMeters}m',
+      );
       return;
     }
+
+    // Log successful position reception
+    final accuracyStr = accuracy.isFinite
+        ? '${accuracy.toStringAsFixed(1)}m'
+        : 'unknown';
+    debugPrint(
+      '✅ GPS position received: lat=${pos.latitude.toStringAsFixed(6)}, lng=${pos.longitude.toStringAsFixed(6)}, accuracy=$accuracyStr',
+    );
 
     final timestamp = pos.timestamp;
     final raw = FilteredLocation(pos.latitude, pos.longitude, timestamp);

@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 
 import '../../models/saved_location.dart';
 import 'controller/poc_navigation_controller.dart';
+import 'widgets/mini_map_widget.dart';
 import 'widgets/signal_analytics_card.dart';
 import 'widgets/vertical_progress_line.dart';
 
@@ -94,9 +95,14 @@ class _PocNavigationScreenState extends State<PocNavigationScreen> {
         const SizedBox(height: 24),
         _renderNavigationArea(),
         const SizedBox(height: 16),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: SignalAnalyticsCard(controller: controller),
+        // Padding(
+        //   padding: const EdgeInsets.symmetric(horizontal: 16),
+        //   child: SignalAnalyticsCard(controller: controller),
+        // ),
+        // const SizedBox(height: 12),
+        MiniMapWidget(
+          controller: controller,
+          mapAssetPath: 'assets/images/bhalka2D_map.png',
         ),
         _renderDistanceInfo(),
       ],
