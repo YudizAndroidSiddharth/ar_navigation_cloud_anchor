@@ -1078,11 +1078,9 @@ class PocNavigationController extends GetxController {
     final clampedY = normalizedY.clamp(0.0, 1.0).toDouble();
 
     final dx = clampedX * mapSize.width;
-    // Invert Y so that larger latitudes (further “up” in the world/map)
-    // appear towards the top of the widget. Combined with the anchored
-    // map bounds, this keeps the destination fixed and lets the user
-    // move upward as they approach.
-    final dy = mapSize.height * (1 - clampedY);
+    // Flip the vertical axis so that larger latitudes map towards the
+    // bottom of the widget, effectively flipping the mini-map.
+    final dy = clampedY * mapSize.height;
 
     return Offset(dx, dy);
   }
