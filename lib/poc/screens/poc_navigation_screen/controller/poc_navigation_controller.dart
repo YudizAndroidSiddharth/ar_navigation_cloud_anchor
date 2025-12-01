@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -103,7 +104,6 @@ class PocNavigationController extends GetxController {
 
   double? _smoothedDistanceMeters;
   int _stableGpsCount = 0;
-  DateTime? _lastNavLog; // For throttling navigation debug logs
 
   @override
   void onInit() {
@@ -209,22 +209,17 @@ class PocNavigationController extends GetxController {
     if (_smoothedDistanceMeters == null) {
       _smoothedDistanceMeters = distanceMeters;
       _stableGpsCount = 1;
-      // Show raw distance immediately to avoid showing 0
-      displayDistanceMeters.value = distanceMeters;
     } else {
       // Update smoothed distance using weighted average
       _smoothedDistanceMeters =
           _distanceSmoothingFactor * distanceMeters +
           (1 - _distanceSmoothingFactor) * _smoothedDistanceMeters!;
       _stableGpsCount++;
+    }
 
-      // Show raw distance until we have enough stable samples, then use smoothed
-      if (_stableGpsCount >= _minStableGpsSamples) {
-        displayDistanceMeters.value = _smoothedDistanceMeters;
-      } else {
-        // Show raw distance during initial warm-up to provide immediate feedback
-        displayDistanceMeters.value = distanceMeters;
-      }
+    // Only update display distance once we have enough stable samples
+    if (_stableGpsCount >= _minStableGpsSamples) {
+      displayDistanceMeters.value = _smoothedDistanceMeters;
     }
   }
 
@@ -273,6 +268,22 @@ class PocNavigationController extends GetxController {
       debugPrint('✅ Continuous BLE scanning started successfully');
     } catch (e) {
       _handleError('Failed to start BLE scanning', e);
+    }
+  }
+
+  /// Ensure Bluetooth is ready
+  Future<void> _ensureBluetoothReady() async {
+    final adapterState = await FlutterBluePlus.adapterState.first;
+    if (adapterState != BluetoothAdapterState.on) {
+      if (adapterState == BluetoothAdapterState.off) {
+        await FlutterBluePlus.turnOn();
+      }
+
+      // Wait for Bluetooth to be ready
+      await FlutterBluePlus.adapterState
+          .where((state) => state == BluetoothAdapterState.on)
+          .first
+          .timeout(const Duration(seconds: 10));
     }
   }
 
@@ -697,17 +708,9 @@ class PocNavigationController extends GetxController {
     final heading = headingDegrees.value;
 
     if (position == null || heading == null) {
-      // Only log once per second to avoid spam
-      if (kDebugMode) {
-        final now = DateTime.now();
-        if (_lastNavLog == null ||
-            now.difference(_lastNavLog!) > const Duration(seconds: 1)) {
-          debugPrint(
-            '🧭 Navigation: Waiting for GPS fix - Position: ${position != null ? "✓" : "null"}, Heading: ${heading != null ? "✓" : "null"}',
-          );
-          _lastNavLog = now;
-        }
-      }
+      debugPrint(
+        '🧭 Navigation: Missing data - Position: $position, Heading: $heading',
+      );
       return 0.0;
     }
 
@@ -859,14 +862,7 @@ class PocNavigationController extends GetxController {
     );
   }
 
-  void _handleError(String message, dynamic error) {
-    debugPrint('❌ $message: $error');
-    if (Get.context != null) {
-      SnackBarUtil.showErrorSnackbar(Get.context!, '$message: $error');
-    }
-  }
-
-  /// Get signal color based on signal strength
+  /// Get signal color for a waypoint based on signal strength
   Color signalColorFor(String waypointId) {
     final strength = signalStrength[waypointId] ?? 0.0;
     if (strength >= 85) return Colors.green;
@@ -876,34 +872,30 @@ class PocNavigationController extends GetxController {
     return Colors.red;
   }
 
-  /// Get signal strength percentage
+  /// Get signal strength percentage for a waypoint
   double signalPercentFor(String waypointId) {
     return signalStrength[waypointId] ?? 0.0;
   }
 
-  /// Get signal quality label
+  /// Get signal quality label for a waypoint
   String signalQualityLabelFor(String waypointId) {
+    final strength = signalStrength[waypointId] ?? 0.0;
     final quality = signalQuality[waypointId] ?? 0.0;
-    final rssi = smoothedRssi[waypointId] ?? -100.0;
 
-    if (quality >= 80 && rssi >= _waypointReachedThreshold) {
-      return 'Excellent';
-    } else if (quality >= 60) {
-      return 'Good';
-    } else if (quality >= 40) {
-      return 'Fair';
-    } else if (quality >= 20) {
-      return 'Weak';
-    } else {
-      return 'Poor';
-    }
+    // Combine strength and quality for overall assessment
+    final overall = (strength * 0.7 + quality * 0.3);
+
+    if (overall >= 85) return 'Excellent';
+    if (overall >= 65) return 'Good';
+    if (overall >= 45) return 'Fair';
+    if (overall >= 25) return 'Weak';
+    return 'Very Weak';
   }
 
-  /// Restart scanning (useful for permission requests)
-  Future<void> restartScanning() async {
-    final granted = await _checkPermissions();
-    if (granted) {
-      await _startNavigation();
+  void _handleError(String message, dynamic error) {
+    debugPrint('❌ $message: $error');
+    if (Get.context != null) {
+      SnackBarUtil.showErrorSnackbar(Get.context!, '$message: $error');
     }
   }
 }
