@@ -1020,10 +1020,13 @@ class PocNavigationController extends GetxController {
     }
 
     // If bounds exist but not locked, return them (shouldn't happen, but safety check)
-    if (mapBounds.value != null) return mapBounds.value!;
+    if (mapBounds.value != null) {
+      return mapBounds.value!;
+    }
 
     final userPoint =
         userPosition ?? mapDisplayPosition.value ?? currentPosition.value;
+
     final destination = LatLng(target.latitude, target.longitude);
     final points = <LatLng>[destination];
     if (userPoint != null) {
@@ -1046,11 +1049,13 @@ class PocNavigationController extends GetxController {
     final destinationNormalized =
         (destination.lat - baseBounds.minLat) / latRange;
 
-    const desiredUserNormalized = 0.12; // keep user near bottom edge
+    const desiredUserNormalized = 0.85; // keep user at bottom edge
     final shiftNormalized = userNormalized - desiredUserNormalized;
 
-    final minShift = destinationNormalized - 0.95;
-    final maxShift = destinationNormalized - 0.05;
+    // Allow destination to be positioned above user (lower normalized values)
+    // Destination can be anywhere from top (0.05) to just above user (0.80)
+    final minShift = destinationNormalized - 0.80; // Allow destination just above user
+    final maxShift = destinationNormalized - 0.05; // Allow destination at top
     final clampedShift = shiftNormalized.clamp(minShift, maxShift);
 
     final latShift = clampedShift * latRange;
@@ -1063,6 +1068,7 @@ class PocNavigationController extends GetxController {
     );
 
     mapBounds.value = anchoredBounds;
+    // Lock bounds permanently after first calculation
     _mapBoundsLocked = true;
     return anchoredBounds;
   }

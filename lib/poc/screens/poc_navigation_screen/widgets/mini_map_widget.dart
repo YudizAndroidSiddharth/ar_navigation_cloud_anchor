@@ -35,9 +35,8 @@ class MiniMapWidget extends StatelessWidget {
               final mapSize = Size(constraints.maxWidth, constraints.maxHeight);
 
               return Obx(() {
-                // Get or calculate map bounds only once – controller locks them
-                // after the initial samples so the destination stays fixed
-                // and the user moves within those bounds.
+                // Use locked bounds if available, otherwise calculate once
+                // Destination stays fixed, only user position moves within bounds
                 final bounds =
                     controller.mapBounds.value ??
                     controller.calculateMapBounds(
