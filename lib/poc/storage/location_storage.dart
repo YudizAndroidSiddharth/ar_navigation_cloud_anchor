@@ -30,9 +30,28 @@ class LocationStorage {
 
   Future<void> removeLocation(SavedLocation location) async {
     final current = await getLocations();
-    final updated = current
-        .where((loc) => !_isSameLocation(loc, location))
-        .toList();
+    final updated =
+        current.where((loc) => !_isSameLocation(loc, location)).toList();
+    await saveLocations(updated);
+  }
+
+  /// Upsert a location based on its [name].
+  ///
+  /// If a location with the same name already exists, it is replaced.
+  /// Otherwise, the given [location] is appended.
+  ///
+  /// This is used by the route editor so that we can safely update
+  /// destination coordinates and attached routePoints without having to
+  /// know the previous latitude/longitude.
+  Future<void> upsertLocationByName(SavedLocation location) async {
+    final current = await getLocations();
+    final updated = List<SavedLocation>.from(current);
+    final index = updated.indexWhere((loc) => loc.name == location.name);
+    if (index >= 0) {
+      updated[index] = location;
+    } else {
+      updated.add(location);
+    }
     await saveLocations(updated);
   }
 

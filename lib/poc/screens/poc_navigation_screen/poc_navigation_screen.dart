@@ -1,16 +1,23 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../../models/saved_location.dart';
+import '../../utils/geo_utils.dart';
 import 'controller/poc_navigation_controller.dart';
 import 'widgets/mini_map_widget.dart';
-import 'widgets/signal_analytics_card.dart';
+// import 'widgets/signal_analytics_card.dart';
 import 'widgets/vertical_progress_line.dart';
 
 class PocNavigationScreen extends StatefulWidget {
   final SavedLocation target;
+  final List<LatLng>? routePoints;
 
-  const PocNavigationScreen({super.key, required this.target});
+  const PocNavigationScreen({
+    super.key,
+    required this.target,
+    this.routePoints,
+  });
 
   @override
   State<PocNavigationScreen> createState() => _PocNavigationScreenState();
@@ -26,8 +33,26 @@ class _PocNavigationScreenState extends State<PocNavigationScreen> {
     if (Get.isRegistered<PocNavigationController>()) {
       Get.delete<PocNavigationController>();
     }
+    // Build route for this session:
+    // - If caller provided routePoints (from Feeding Zone), use them.
+    // - Otherwise, fall back to a minimal route that just uses the target.
+    final routePoints =
+        widget.routePoints ??
+        <LatLng>[LatLng(widget.target.latitude, widget.target.longitude)];
+
+    debugPrint(
+      '🗺️ [PocNavigationScreen] initState: routePoints provided=${widget.routePoints != null}, count=${routePoints.length}',
+    );
+    for (var i = 0; i < routePoints.length; i++) {
+      debugPrint(
+        '🗺️ [PocNavigationScreen] Route[$i]: lat=${routePoints[i].lat.toStringAsFixed(6)}, lng=${routePoints[i].lng.toStringAsFixed(6)}',
+      );
+    }
+
     // Create and register new controller
-    controller = Get.put(PocNavigationController(widget.target));
+    controller = Get.put(
+      PocNavigationController(widget.target)..initializeRoute(routePoints),
+    );
   }
 
   @override
@@ -163,8 +188,22 @@ class _PocNavigationScreenState extends State<PocNavigationScreen> {
       padding: const EdgeInsets.all(16),
       child: Column(
         children: [
-          Obx(
-            () => Text(
+          Obx(() {
+            final distance = controller.displayDistanceMeters.value;
+            if (distance == null) {
+              // Show a loader while we don't have any distance calculated yet,
+              // instead of showing a confusing "0 m".
+              return const SizedBox(
+                height: 40,
+                width: 40,
+                child: CircularProgressIndicator(
+                  strokeWidth: 3,
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
+              );
+            }
+
+            return Text(
               controller.distanceText,
               textAlign: TextAlign.center,
               style: const TextStyle(
@@ -172,8 +211,8 @@ class _PocNavigationScreenState extends State<PocNavigationScreen> {
                 fontSize: 28,
                 fontWeight: FontWeight.bold,
               ),
-            ),
-          ),
+            );
+          }),
           const SizedBox(height: 8),
         ],
       ),

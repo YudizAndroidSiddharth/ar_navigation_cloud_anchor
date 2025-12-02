@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:ar_navigation_cloud_anchor/poc/screens/poc_navigation_screen/poc_navigation_screen.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/route_manager.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -10,6 +11,7 @@ import 'package:ar_navigation_cloud_anchor/poc/storage/location_storage.dart';
 import 'package:ar_navigation_cloud_anchor/poc/utils/pref_utiles.dart';
 import 'package:ar_navigation_cloud_anchor/utiles/snackbar_utiles.dart';
 import 'package:ar_navigation_cloud_anchor/poc/widgets/custom_button.dart';
+import 'package:ar_navigation_cloud_anchor/poc/utils/geo_utils.dart';
 
 class SelectFeedingZoneScreen extends StatefulWidget {
   const SelectFeedingZoneScreen({super.key});
@@ -97,9 +99,14 @@ class _SelectFeedingZoneScreenState extends State<SelectFeedingZoneScreen> {
     await PrefUtils().setSelectedPlatform(payload);
     if (!mounted) return;
     SnackBarUtil.showSuccessSnackbar(context, 'प्लेटफॉर्म चुना गया');
+    final routePoints = _buildRoutePoints(_selectedLocation!);
+    debugPrint('🗺️ [SelectFeedingZone] Navigating to PocNavigationScreen with ${routePoints.length} routePoints');
     navigator?.push(
       MaterialPageRoute(
-        builder: (context) => PocNavigationScreen(target: _selectedLocation!),
+        builder: (context) => PocNavigationScreen(
+          target: _selectedLocation!,
+          routePoints: routePoints,
+        ),
       ),
     );
   }
@@ -288,5 +295,61 @@ class _SelectFeedingZoneScreenState extends State<SelectFeedingZoneScreen> {
         ),
       ),
     );
+  }
+
+  /// Build the ordered navigation route from the selected Feeding Zone.
+  ///
+  /// Priority:
+  /// 1. If routePoints exist: waypoints (sorted by order) + destination.
+  /// 2. If no routePoints: fall back to a simple route with just destination.
+  List<LatLng> _buildRoutePoints(SavedLocation location) {
+    debugPrint('🗺️ [SelectFeedingZone] Building route for zone: ${location.name}');
+    debugPrint('🗺️ [SelectFeedingZone] Total routePoints in SavedLocation: ${location.routePoints.length}');
+    
+    if (location.routePoints.isNotEmpty) {
+      final waypoints = location.routePoints
+          .where((p) => p.type == RoutePointType.waypoint)
+          .toList()
+        ..sort((a, b) => a.order.compareTo(b.order));
+      final destinations = location.routePoints
+          .where((p) => p.type == RoutePointType.destination)
+          .toList();
+
+      debugPrint('🗺️ [SelectFeedingZone] Found ${waypoints.length} waypoints, ${destinations.length} destinations');
+
+      final points = <LatLng>[];
+      for (final wp in waypoints) {
+        points.add(LatLng(wp.latitude, wp.longitude));
+        debugPrint('🗺️ [SelectFeedingZone] Added waypoint ${wp.order}: lat=${wp.latitude.toStringAsFixed(6)}, lng=${wp.longitude.toStringAsFixed(6)}');
+      }
+
+      if (destinations.isNotEmpty) {
+        final dest = destinations.first;
+        points.add(LatLng(dest.latitude, dest.longitude));
+        debugPrint('🗺️ [SelectFeedingZone] Added destination: lat=${dest.latitude.toStringAsFixed(6)}, lng=${dest.longitude.toStringAsFixed(6)}');
+      } else {
+        // Always add destination at the end, even if not explicitly set in routePoints.
+        // This ensures waypoints connect to a final destination.
+        // Use SavedLocation coordinates as the destination fallback.
+        points.add(LatLng(location.latitude, location.longitude));
+        debugPrint('🗺️ [SelectFeedingZone] Added destination (fallback from SavedLocation): lat=${location.latitude.toStringAsFixed(6)}, lng=${location.longitude.toStringAsFixed(6)}');
+      }
+
+      if (points.isNotEmpty) {
+        debugPrint('🗺️ [SelectFeedingZone] Final routePoints count: ${points.length}');
+        for (var i = 0; i < points.length; i++) {
+          debugPrint('🗺️ [SelectFeedingZone] Route[$i]: lat=${points[i].lat.toStringAsFixed(6)}, lng=${points[i].lng.toStringAsFixed(6)}');
+        }
+        return points;
+      }
+    }
+
+    // Backward compatible fallback: only the final destination.
+    debugPrint('🗺️ [SelectFeedingZone] No routePoints found, using fallback destination only');
+    final fallback = [
+      LatLng(location.latitude, location.longitude),
+    ];
+    debugPrint('🗺️ [SelectFeedingZone] Fallback route[0]: lat=${fallback[0].lat.toStringAsFixed(6)}, lng=${fallback[0].lng.toStringAsFixed(6)}');
+    return fallback;
   }
 }

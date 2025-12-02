@@ -136,6 +136,40 @@ class PocNavigationController extends GetxController {
   Timer? _distanceUpdateTimer;
   double? _lastDisplayedDistance;
 
+  /// Route points used for 2D mini-map polyline (start -> checkpoints -> destination).
+  /// Backed by [List] so we can initialize after construction while keeping
+  /// the controller compatible with GetX's default constructor usage.
+  final List<LatLng> routePoints = [];
+
+  /// Initialize the route for this navigation session.
+  /// If [points] is null or empty, we fall back to a simple [start, destination]
+  /// style route that uses only the target location.
+  void initializeRoute(List<LatLng>? points) {
+    routePoints.clear();
+
+    debugPrint(
+      '🗺️ [PocNavigationController] initializeRoute called with ${points?.length ?? 0} points',
+    );
+
+    if (points != null && points.isNotEmpty) {
+      routePoints.addAll(points);
+      debugPrint(
+        '🗺️ [PocNavigationController] Route initialized with ${routePoints.length} points',
+      );
+      for (var i = 0; i < routePoints.length; i++) {
+        debugPrint(
+          '🗺️ [PocNavigationController] Route[$i]: lat=${routePoints[i].lat.toStringAsFixed(6)}, lng=${routePoints[i].lng.toStringAsFixed(6)}',
+        );
+      }
+    } else {
+      // Fallback: simple route that just uses the destination.
+      routePoints.add(LatLng(target.latitude, target.longitude));
+      debugPrint(
+        '🗺️ [PocNavigationController] Fallback: using target only: lat=${target.latitude.toStringAsFixed(6)}, lng=${target.longitude.toStringAsFixed(6)}',
+      );
+    }
+  }
+
   @override
   void onInit() {
     super.onInit();
@@ -358,6 +392,87 @@ class PocNavigationController extends GetxController {
       _movingSamples = 0;
       _stationarySamples = 0;
     }
+  }
+
+  /// Returns the user's position snapped to the nearest point on the route
+  /// polyline (start -> checkpoints -> destination). Used only for drawing
+  /// on the 2D mini-map; distance calculations still use GPS directly.
+  LatLng? get snappedUserPosition {
+    final user = mapDisplayPosition.value;
+    if (user == null || routePoints.length < 2) {
+      return user;
+    }
+    return _snapToRoute(user);
+  }
+
+  /// Project [user] onto the closest segment of the route in a local
+  /// Cartesian approximation (meters), then convert back to LatLng.
+  LatLng _snapToRoute(LatLng user) {
+    // Use the first route point as local origin for an equirectangular
+    // approximation. This is sufficient for short indoor/outdoor routes.
+    final origin = routePoints.first;
+
+    Offset toLocal(LatLng p) {
+      const earthRadiusMeters = 6371000.0;
+      final latRad = (p.lat - origin.lat) * (math.pi / 180.0);
+      final lngRad = (p.lng - origin.lng) * (math.pi / 180.0);
+      final x =
+          earthRadiusMeters * lngRad * math.cos(origin.lat * (math.pi / 180.0));
+      final y = earthRadiusMeters * latRad;
+      return Offset(x, y);
+    }
+
+    LatLng toLatLng(Offset local) {
+      const earthRadiusMeters = 6371000.0;
+      final dLat = local.dy / earthRadiusMeters;
+      final dLng =
+          local.dx /
+          (earthRadiusMeters * math.cos(origin.lat * (math.pi / 180.0)));
+      final lat = origin.lat + dLat * (180.0 / math.pi);
+      final lng = origin.lng + dLng * (180.0 / math.pi);
+      return LatLng(lat, lng);
+    }
+
+    final userLocal = toLocal(user);
+
+    double bestDistSq = double.infinity;
+    Offset bestPoint = userLocal;
+
+    for (var i = 0; i < routePoints.length - 1; i++) {
+      final aLocal = toLocal(routePoints[i]);
+      final bLocal = toLocal(routePoints[i + 1]);
+      final ab = bLocal - aLocal;
+      final abLenSq = ab.dx * ab.dx + ab.dy * ab.dy;
+
+      if (abLenSq == 0) {
+        // Degenerate segment
+        final distSq = (userLocal - aLocal).distanceSquared;
+        if (distSq < bestDistSq) {
+          bestDistSq = distSq;
+          bestPoint = aLocal;
+        }
+        continue;
+      }
+
+      // Projection of user onto segment, clamped to [0,1]
+      final t =
+          ((userLocal.dx - aLocal.dx) * ab.dx +
+              (userLocal.dy - aLocal.dy) * ab.dy) /
+          abLenSq;
+      final clampedT = t.clamp(0.0, 1.0);
+      final proj = Offset(
+        aLocal.dx + ab.dx * clampedT,
+        aLocal.dy + ab.dy * clampedT,
+      );
+
+      final distSq = (userLocal - proj).distanceSquared;
+      if (distSq < bestDistSq) {
+        bestDistSq = distSq;
+        bestPoint = proj;
+      }
+    }
+
+    return toLatLng(bestPoint);
   }
 
   /// Determine if user is clearly walking away from the target,
@@ -1149,62 +1264,62 @@ class PocNavigationController extends GetxController {
   MapBounds calculateMapBounds({LatLng? userPosition}) {
     // If bounds are already locked, return existing bounds
     if (_mapBoundsLocked && mapBounds.value != null) {
+      debugPrint('🗺️ [calculateMapBounds] Using locked bounds');
       return mapBounds.value!;
     }
 
-    // If bounds exist but not locked, return them (shouldn't happen, but safety check)
+    // If bounds exist but not locked, return them (safety check)
     if (mapBounds.value != null) {
+      debugPrint('🗺️ [calculateMapBounds] Using existing (unlocked) bounds');
       return mapBounds.value!;
     }
 
     final userPoint =
         userPosition ?? mapDisplayPosition.value ?? currentPosition.value;
 
-    final destination = LatLng(target.latitude, target.longitude);
-    final points = <LatLng>[destination];
-    if (userPoint != null) {
-      points.add(userPoint);
+    debugPrint(
+      '🗺️ [calculateMapBounds] Calculating new bounds: routePoints=${routePoints.length}, userPoint=${userPoint != null ? "present" : "null"}',
+    );
+
+    // Always start from the full route polyline so the entire zig-zag path
+    // is visible on the mini-map.
+    final points = <LatLng>[...routePoints, if (userPoint != null) userPoint];
+
+    debugPrint(
+      '🗺️ [calculateMapBounds] Total points for bounds calculation: ${points.length}',
+    );
+    for (var i = 0; i < points.length; i++) {
+      debugPrint(
+        '🗺️ [calculateMapBounds] Bounds point[$i]: lat=${points[i].lat.toStringAsFixed(6)}, lng=${points[i].lng.toStringAsFixed(6)}',
+      );
+    }
+
+    // As an extra safety guard, if somehow routePoints is empty,
+    // fall back to just the destination + user.
+    if (points.isEmpty) {
+      debugPrint(
+        '🗺️ [calculateMapBounds] WARNING: points is empty, using fallback',
+      );
+      final destination = LatLng(target.latitude, target.longitude);
+      points.add(destination);
+      if (userPoint != null) {
+        points.add(userPoint);
+      }
     }
 
     final baseBounds = MapBounds.fromPoints(points)
         .enforceMinimumSpan(minSpan: _minMapSpanDegrees)
-        .withPadding(
-          paddingFactor: 0.10,
-          bottomBiasFactor: userPoint != null ? 0.10 : 0.05,
-        );
+        // Symmetric padding so the whole route sits in the middle
+        // of the mini-map instead of being pushed to the bottom.
+        .withPadding(paddingFactor: 0.08, bottomBiasFactor: 0.0);
 
-    if (userPoint == null) {
-      return baseBounds;
-    }
-
-    final latRange = math.max(baseBounds.latRange, 1e-9);
-    final userNormalized = (userPoint.lat - baseBounds.minLat) / latRange;
-    final destinationNormalized =
-        (destination.lat - baseBounds.minLat) / latRange;
-
-    const desiredUserNormalized = 0.85; // keep user at bottom edge
-    final shiftNormalized = userNormalized - desiredUserNormalized;
-
-    // Allow destination to be positioned above user (lower normalized values)
-    // Destination can be anywhere from top (0.05) to just above user (0.80)
-    final minShift =
-        destinationNormalized - 0.80; // Allow destination just above user
-    final maxShift = destinationNormalized - 0.05; // Allow destination at top
-    final clampedShift = shiftNormalized.clamp(minShift, maxShift);
-
-    final latShift = clampedShift * latRange;
-
-    final anchoredBounds = MapBounds(
-      minLat: baseBounds.minLat + latShift,
-      maxLat: baseBounds.maxLat + latShift,
-      minLng: baseBounds.minLng,
-      maxLng: baseBounds.maxLng,
+    debugPrint(
+      '🗺️ [calculateMapBounds] Final bounds: minLat=${baseBounds.minLat.toStringAsFixed(6)}, maxLat=${baseBounds.maxLat.toStringAsFixed(6)}, minLng=${baseBounds.minLng.toStringAsFixed(6)}, maxLng=${baseBounds.maxLng.toStringAsFixed(6)}',
     );
 
-    mapBounds.value = anchoredBounds;
-    // Lock bounds permanently after first calculation
+    mapBounds.value = baseBounds;
     _mapBoundsLocked = true;
-    return anchoredBounds;
+    return baseBounds;
   }
 
   Offset latLngToPixel(LatLng point, MapBounds bounds, Size mapSize) {
