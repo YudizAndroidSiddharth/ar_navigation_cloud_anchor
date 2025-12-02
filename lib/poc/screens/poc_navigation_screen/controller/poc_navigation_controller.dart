@@ -40,16 +40,27 @@ class PocNavigationController extends GetxController {
   // Distance smoothing
   static const int _minStableGpsSamples = 3;
   static const double _distanceSmoothingFactor =
-      0.35; // Reduced for more stability
-  static const double _mapSmoothingFactor = 0.08;
-  static const double _mapJitterThresholdMeters = 8.0;
+      0.55; // faster distance updates
   static const int _initialSamplesForBounds = 4;
   static const double _minMapSpanDegrees = 0.0008;
   static const double _minDistanceChangeMeters =
-      2.0; // Minimum change to update distance
+      1.5; // more responsive to smaller movements
   static const Duration _distanceUpdateDebounce = Duration(
-    milliseconds: 500,
+    milliseconds: 700, // slower UI updates = more stable
   ); // Debounce distance updates
+
+  // Map jitter control - adaptive smoothing for map marker
+  static const double _jitterIgnoreThresholdMeters =
+      0.7; // <0.7m = ignore as noise
+  static const double _smallMoveThresholdMeters = 3.0; // 0.7–3m = walk / slow
+
+  // Movement detection for distance updates
+  static const double _movingSpeedThresholdMps =
+      0.4; // above this = clearly walking
+  static const double _stationarySpeedThresholdMps =
+      0.2; // below this = clearly stationary
+  static const int _movementStableSamples =
+      3; // samples required to switch state
 
   // Signal strength display
   static const double _signalFloor = 0.0;
@@ -85,6 +96,10 @@ class PocNavigationController extends GetxController {
   final Map<String, List<int>> _rssiHistory = {};
   final Map<String, DateTime> _lastStateChange = {};
   final Map<String, int> _stableSampleCount = {};
+
+  bool _isUserMoving = false;
+  int _movingSamples = 0;
+  int _stationarySamples = 0;
 
   // Waypoint Configuration
   final List<BleWaypoint> _waypoints = [
@@ -224,13 +239,17 @@ class PocNavigationController extends GetxController {
     debugPrint(
       '🔄 GPS update received: lat=${position.lat.toStringAsFixed(6)}, lng=${position.lng.toStringAsFixed(6)}',
     );
+
+    _updateMovementState();
+
+    // Store latest filtered position
     currentPosition.value = position;
+
+    // Map uses adaptively smoothed marker (ignores jitter, responds to real movement)
     _updateMapDisplayPosition(position);
 
-    // Calculate distance from smoothed mapDisplayPosition (updated above)
-    // This ensures distance is stable and matches what's shown on the map
-    final smoothedPosition = mapDisplayPosition.value ?? position;
-    _updateDistanceFromPosition(smoothedPosition);
+    // Distance uses the filtered GPS directly (no extra map smoothing)
+    _updateDistanceFromPosition(position);
   }
 
   /// Update distance calculation from smoothed position
@@ -241,6 +260,26 @@ class PocNavigationController extends GetxController {
       target.latitude,
       target.longitude,
     );
+
+    // Raw guard: unless we are clearly walking away,
+    // do NOT allow the displayed distance to increase.
+    if (_lastDisplayedDistance != null) {
+      final rawDelta = distanceMeters - _lastDisplayedDistance!;
+
+      // Case A: user is not moving → never allow increases
+      if (!_isUserMoving && rawDelta >= 0) {
+        return;
+      }
+
+      // Case B: user is moving, but distance wants to go UP.
+      // Only accept this if direction + speed say "clearly walking away".
+      if (_isUserMoving && rawDelta > 0) {
+        final clearlyAway = _isClearlyWalkingAway(position, distanceMeters);
+        if (!clearlyAway) {
+          return;
+        }
+      }
+    }
 
     // Initialize smoothed distance if null
     if (_smoothedDistanceMeters == null) {
@@ -253,6 +292,16 @@ class PocNavigationController extends GetxController {
           _distanceSmoothingFactor * distanceMeters +
           (1 - _distanceSmoothingFactor) * _smoothedDistanceMeters!;
       _stableGpsCount++;
+
+      // Safety clamp: do not allow sudden large increases (likely noise)
+      if (_lastDisplayedDistance != null && _smoothedDistanceMeters != null) {
+        final rawIncrease = _smoothedDistanceMeters! - _lastDisplayedDistance!;
+
+        // If distance suddenly jumps up by more than 6m, treat it as noise
+        if (rawIncrease > 6.0) {
+          _smoothedDistanceMeters = _lastDisplayedDistance;
+        }
+      }
     }
 
     // Only update display distance once we have enough stable samples
@@ -286,14 +335,85 @@ class PocNavigationController extends GetxController {
     headingDegrees.value = heading;
   }
 
+  /// Update internal movement state using filtered GPS speed.
+  /// This lets us distinguish real walking from small GPS jitter.
+  void _updateMovementState() {
+    final speed = _locationService.currentSpeedMps ?? 0.0;
+
+    if (speed > _movingSpeedThresholdMps) {
+      _movingSamples++;
+      _stationarySamples = 0;
+      if (_movingSamples >= _movementStableSamples) {
+        _isUserMoving = true;
+      }
+    } else if (speed < _stationarySpeedThresholdMps) {
+      _stationarySamples++;
+      _movingSamples = 0;
+      if (_stationarySamples >= _movementStableSamples) {
+        _isUserMoving = false;
+      }
+    } else {
+      // In the hysteresis band between stationary and moving thresholds,
+      // keep current state but don't accumulate counters.
+      _movingSamples = 0;
+      _stationarySamples = 0;
+    }
+  }
+
+  /// Determine if user is clearly walking away from the target,
+  /// using movement course vs bearing-to-target plus a minimum
+  /// distance increase threshold.
+  bool _isClearlyWalkingAway(LatLng position, double distanceMeters) {
+    final course = _locationService.currentCourseDegrees;
+
+    // If we don't have a reliable course yet, be conservative.
+    if (course == null) {
+      return false;
+    }
+
+    // If the increase is tiny, treat it as noise even if direction is ambiguous.
+    if (_lastDisplayedDistance != null) {
+      final rawDelta = distanceMeters - _lastDisplayedDistance!;
+      if (rawDelta < 2.0) {
+        return false;
+      }
+    }
+
+    // Bearing from current position to the target
+    final bearingToTarget = bearingBetween(
+      position.lat,
+      position.lng,
+      target.latitude,
+      target.longitude,
+    );
+
+    // Angle between where we are walking and where the target is.
+    // ~0°  = walking straight towards target
+    // ~180° = walking straight away from target
+    final angleDiff = _angleDifferenceDegrees(course, bearingToTarget);
+
+    // Consider "clearly walking away" only if our movement direction
+    // is strongly opposite to the target direction.
+    return angleDiff >= 120.0; // 120–180° = mostly away
+  }
+
+  /// Small helper to get absolute smallest angle difference between two bearings.
+  double _angleDifferenceDegrees(double a, double b) {
+    final diff = (a - b + 540.0) % 360.0 - 180.0;
+    return diff.abs();
+  }
+
   void _updateMapDisplayPosition(LatLng position) {
-    if (mapDisplayPosition.value == null) {
+    final previous = mapDisplayPosition.value;
+
+    // First update → just set and start collecting samples
+    if (previous == null) {
       mapDisplayPosition.value = position;
       _accumulateInitialMapSample(position);
       return;
     }
 
-    final previous = mapDisplayPosition.value!;
+    // Distance between last drawn point and new GPS point
     final deltaMeters = Geolocator.distanceBetween(
       previous.lat,
       previous.lng,
@@ -301,17 +421,30 @@ class PocNavigationController extends GetxController {
       position.lng,
     );
 
-    // Always update mapDisplayPosition with smoothing, but use less smoothing for small movements
-    // This prevents jumping while still allowing smooth updates
-    final smoothingFactor = deltaMeters < _mapJitterThresholdMeters
-        ? _mapSmoothingFactor *
-              0.5 // Use less smoothing for small movements
-        : _mapSmoothingFactor;
+    // 1️⃣ Ignore very tiny movements → pure jitter
+    if (deltaMeters < _jitterIgnoreThresholdMeters) {
+      // Still use this point for initial bounds if not locked
+      if (!_mapBoundsLocked) {
+        _accumulateInitialMapSample(position);
+      }
+      return;
+    }
 
-    final smoothed = lerpLatLng(previous, position, smoothingFactor);
+    double t; // smoothing factor for lerp
+
+    // 2️⃣ Small movement: strong smoothing (avoid shaking)
+    if (deltaMeters < _smallMoveThresholdMeters) {
+      t = 0.25; // move 25% toward new position
+    }
+    // 3️⃣ Larger movement: follow user quickly
+    else {
+      t = 0.65; // jump most of the way towards new point
+    }
+
+    final smoothed = lerpLatLng(previous, position, t);
     mapDisplayPosition.value = smoothed;
 
-    // Only accumulate samples for bounds calculation if bounds are not locked
+    // Use smoothed position to build initial bounds (optional, but fine)
     if (!_mapBoundsLocked) {
       _accumulateInitialMapSample(smoothed);
     }
@@ -1054,7 +1187,8 @@ class PocNavigationController extends GetxController {
 
     // Allow destination to be positioned above user (lower normalized values)
     // Destination can be anywhere from top (0.05) to just above user (0.80)
-    final minShift = destinationNormalized - 0.80; // Allow destination just above user
+    final minShift =
+        destinationNormalized - 0.80; // Allow destination just above user
     final maxShift = destinationNormalized - 0.05; // Allow destination at top
     final clampedShift = shiftNormalized.clamp(minShift, maxShift);
 

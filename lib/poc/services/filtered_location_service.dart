@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
@@ -19,24 +18,26 @@ class FilteredLocation {
   const FilteredLocation(this.lat, this.lng, this.timestamp);
 }
 
-/// Service that exposes a smoothed, filtered location stream suitable for UI.
+/// Service that exposes a filtered, lightly-smoothed location stream suitable for UI.
 ///
 /// Pipeline:
 /// Raw GPS/WiFi/Cell location
 ///   ↓
 /// Fused Location Provider (via Geolocator)
 ///   ↓
-/// Accuracy Filter
+/// Accuracy Filter (discard low-quality readings)
 ///   ↓
-/// Speed Filter → Jump Filter
+/// Speed Filter (discard unrealistic speeds)
 ///   ↓
-/// Exponential/Kalman-like Filter (remove noise)
+/// Jump Filter (discard large jumps/glitches)
 ///   ↓
-/// Moving Average (smooth)
+/// Light Exponential Smoothing (alpha 0.55 - fast response)
 ///   ↓
-/// Interpolation (smooth UI motion)
+/// Small Moving Average (window 2 - minimal lag)
 ///   ↓
-/// Final Position Stream for Map/UI
+/// Short Interpolation (120ms - smooth UI)
+///   ↓
+/// Final Position Stream for Map/UI (~1-2 second lag)
 class FilteredLocationService {
   /// Max realistic speed (m/s). Anything above is discarded as noise.
   final double maxHumanSpeedMps;
@@ -48,16 +49,18 @@ class FilteredLocationService {
   final Duration jumpTimeThreshold;
 
   /// Exponential smoothing factor (0 < alpha < 1).
-  /// Smaller = smoother but more laggy.
+  /// Higher = faster response, less smoothing. 0.55 provides light smoothing with fast response.
   final double alpha;
 
   /// Window size for moving average.
+  /// Small window (2) provides minimal lag while reducing jitter.
   final int movingAverageWindow;
 
   /// Threshold for discarding low-accuracy GPS readings.
   final double accuracyThresholdMeters;
 
   /// Duration for interpolating between filtered points for UI.
+  /// Short duration (120ms) provides smooth movement with minimal delay.
   final Duration interpolationDuration;
 
   /// Tick duration for interpolation timer.
@@ -78,17 +81,19 @@ class FilteredLocationService {
   double? currentCourseDegrees; // bearing of movement, 0–360°
 
   FilteredLocationService({
-    this.maxHumanSpeedMps = 15.0, // ~54 km/h
-    this.jumpDistanceMeters = 50.0,
-    this.jumpTimeThreshold = const Duration(seconds: 5),
-    this.alpha = 0.2,
-    this.movingAverageWindow = 5,
-    this.accuracyThresholdMeters = 30.0,
-    this.interpolationDuration = const Duration(milliseconds: 350),
-    this.interpolationTick = const Duration(milliseconds: 30),
+    this.maxHumanSpeedMps = 3.0, // indoor walking, ~11 km/h
+    this.jumpDistanceMeters = 25.0,
+    this.jumpTimeThreshold = const Duration(seconds: 3),
+    this.alpha = 0.25, // balanced exponential smoothing
+    this.movingAverageWindow = 4, // shorter history
+    this.accuracyThresholdMeters = 20.0, // ignore very noisy fixes
+    this.interpolationDuration = const Duration(
+      milliseconds: 250,
+    ), // faster but still smooth UI
+    this.interpolationTick = const Duration(milliseconds: 50),
   });
 
-  /// Smoothed, UI-ready position stream.
+  /// Filtered, lightly-smoothed UI-ready position stream (~1-2 second lag).
   Stream<LatLng> get filteredPosition$ => _controller.stream;
 
   /// Start listening to location updates and feeding the pipeline.
@@ -197,7 +202,7 @@ class FilteredLocationService {
     // Raw point accepted as valid base
     _lastValid = raw;
 
-    // 3) Exponential / Kalman-like smoothing on lat/lng
+    // 3) Light exponential smoothing on lat/lng (alpha 0.55 for fast response)
     LatLng smoothed;
     if (_lastSmoothed == null) {
       smoothed = LatLng(raw.lat, raw.lng);
@@ -209,14 +214,14 @@ class FilteredLocationService {
     }
     _lastSmoothed = smoothed;
 
-    // 4) Moving average window
+    // 4) Small moving average window (size 2 for minimal lag)
     _window.add(smoothed);
     if (_window.length > movingAverageWindow) {
       _window.removeAt(0);
     }
     final averaged = _average(_window);
 
-    // 5) Interpolation for UI smoothness
+    // 5) Very short interpolation for smooth UI movement (120ms)
     _interpolateTo(averaged);
   }
 
@@ -258,7 +263,7 @@ class FilteredLocationService {
 
     _interpTimer = Timer.periodic(interpolationTick, (timer) {
       elapsed += interpolationTick.inMilliseconds;
-      final t = math.min(1.0, elapsed / totalMs);
+      final t = (elapsed / totalMs).clamp(0.0, 1.0);
 
       final current = lerpLatLng(start, target, t);
       _uiPosition = current;
@@ -269,6 +274,7 @@ class FilteredLocationService {
 
       if (t >= 1.0) {
         timer.cancel();
+        _interpTimer = null;
       }
     });
   }
