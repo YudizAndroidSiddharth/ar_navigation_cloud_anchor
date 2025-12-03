@@ -46,12 +46,12 @@ class PocNavigationController extends GetxController {
   static const double _minDistanceChangeMeters =
       1.5; // more responsive to smaller movements
   static const Duration _distanceUpdateDebounce = Duration(
-    milliseconds: 700, // slower UI updates = more stable
+    milliseconds: 200, // optimized from 700ms for faster updates
   ); // Debounce distance updates
 
   // Map jitter control - adaptive smoothing for map marker
   static const double _jitterIgnoreThresholdMeters =
-      0.7; // <0.7m = ignore as noise
+      0.3; // optimized from 0.7m for more responsive updates
   static const double _smallMoveThresholdMeters = 3.0; // 0.7–3m = walk / slow
 
   // Movement detection for distance updates
@@ -60,7 +60,7 @@ class PocNavigationController extends GetxController {
   static const double _stationarySpeedThresholdMps =
       0.2; // below this = clearly stationary
   static const int _movementStableSamples =
-      3; // samples required to switch state
+      2; // optimized from 3 for faster movement detection
 
   // Signal strength display
   static const double _signalFloor = 0.0;
@@ -74,6 +74,7 @@ class PocNavigationController extends GetxController {
   final permissionsGranted = false.obs;
   final currentPosition = Rxn<LatLng>();
   final mapDisplayPosition = Rxn<LatLng>();
+  final mapDisplayPositionFast = Rxn<LatLng>(); // Fast-update path for map display
   final headingDegrees = Rxn<double>();
   final displayDistanceMeters = Rxn<double>();
   final hasShownSuccess = false.obs;
@@ -397,8 +398,19 @@ class PocNavigationController extends GetxController {
   /// Returns the user's position snapped to the nearest point on the route
   /// polyline (start -> checkpoints -> destination). Used only for drawing
   /// on the 2D mini-map; distance calculations still use GPS directly.
+  /// Uses the standard smoothed position for backward compatibility.
   LatLng? get snappedUserPosition {
     final user = mapDisplayPosition.value;
+    if (user == null || routePoints.length < 2) {
+      return user;
+    }
+    return _snapToRoute(user);
+  }
+
+  /// Fast-update version: returns user position snapped to route using fast-update path.
+  /// Provides near real-time updates for map display.
+  LatLng? get snappedUserPositionFast {
+    final user = mapDisplayPositionFast.value;
     if (user == null || routePoints.length < 2) {
       return user;
     }
@@ -524,6 +536,7 @@ class PocNavigationController extends GetxController {
     // First update → just set and start collecting samples
     if (previous == null) {
       mapDisplayPosition.value = position;
+      mapDisplayPositionFast.value = position; // Initialize fast path too
       _accumulateInitialMapSample(position);
       return;
     }
@@ -547,9 +560,9 @@ class PocNavigationController extends GetxController {
 
     double t; // smoothing factor for lerp
 
-    // 2️⃣ Small movement: strong smoothing (avoid shaking)
+    // 2️⃣ Small movement: optimized smoothing (avoid shaking while staying responsive)
     if (deltaMeters < _smallMoveThresholdMeters) {
-      t = 0.25; // move 25% toward new position
+      t = 0.5; // optimized from 0.25 to 0.5 for faster updates
     }
     // 3️⃣ Larger movement: follow user quickly
     else {
@@ -559,10 +572,52 @@ class PocNavigationController extends GetxController {
     final smoothed = lerpLatLng(previous, position, t);
     mapDisplayPosition.value = smoothed;
 
+    // Fast-update path for map display: adaptive smoothing based on movement state
+    _updateMapDisplayPositionFast(position);
+
     // Use smoothed position to build initial bounds (optional, but fine)
     if (!_mapBoundsLocked) {
       _accumulateInitialMapSample(smoothed);
     }
+  }
+
+  /// Fast-update path for map display with adaptive smoothing.
+  /// When user is moving: minimal smoothing (50% lerp) for near real-time updates.
+  /// When stationary: more smoothing (25% lerp) to reduce jitter.
+  void _updateMapDisplayPositionFast(LatLng position) {
+    final previousFast = mapDisplayPositionFast.value;
+
+    // First update → just set
+    if (previousFast == null) {
+      mapDisplayPositionFast.value = position;
+      return;
+    }
+
+    // Distance between last fast position and new GPS point
+    final deltaMeters = Geolocator.distanceBetween(
+      previousFast.lat,
+      previousFast.lng,
+      position.lat,
+      position.lng,
+    );
+
+    // Ignore very tiny movements (same threshold as main path)
+    if (deltaMeters < _jitterIgnoreThresholdMeters) {
+      return;
+    }
+
+    // Adaptive smoothing: fast when moving, smooth when stationary
+    double tFast;
+    if (_isUserMoving) {
+      // User is moving: use 50% lerp for fast response
+      tFast = 0.5;
+    } else {
+      // User is stationary: use 25% lerp to reduce jitter
+      tFast = 0.25;
+    }
+
+    final smoothedFast = lerpLatLng(previousFast, position, tFast);
+    mapDisplayPositionFast.value = smoothedFast;
   }
 
   void _accumulateInitialMapSample(LatLng position) {

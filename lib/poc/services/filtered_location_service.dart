@@ -31,13 +31,13 @@ class FilteredLocation {
 ///   ↓
 /// Jump Filter (discard large jumps/glitches)
 ///   ↓
-/// Light Exponential Smoothing (alpha 0.55 - fast response)
+/// Light Exponential Smoothing (alpha 0.6 - optimized for fast response)
 ///   ↓
 /// Small Moving Average (window 2 - minimal lag)
 ///   ↓
-/// Short Interpolation (120ms - smooth UI)
+/// Short Interpolation (100ms - smooth UI)
 ///   ↓
-/// Final Position Stream for Map/UI (~1-2 second lag)
+/// Final Position Stream for Map/UI (~3-6 second lag, optimized from 13-26s)
 class FilteredLocationService {
   /// Max realistic speed (m/s). Anything above is discarded as noise.
   final double maxHumanSpeedMps;
@@ -84,12 +84,12 @@ class FilteredLocationService {
     this.maxHumanSpeedMps = 3.0, // indoor walking, ~11 km/h
     this.jumpDistanceMeters = 25.0,
     this.jumpTimeThreshold = const Duration(seconds: 3),
-    this.alpha = 0.25, // balanced exponential smoothing
-    this.movingAverageWindow = 4, // shorter history
-    this.accuracyThresholdMeters = 20.0, // ignore very noisy fixes
+    this.alpha = 0.6, // optimized for faster response (was 0.25)
+    this.movingAverageWindow = 2, // reduced from 4 for less delay
+    this.accuracyThresholdMeters = 50.0, // increased from 20.0 for less aggressive filtering
     this.interpolationDuration = const Duration(
-      milliseconds: 250,
-    ), // faster but still smooth UI
+      milliseconds: 100,
+    ), // reduced from 250ms for faster interpolation
     this.interpolationTick = const Duration(milliseconds: 50),
   });
 

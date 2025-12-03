@@ -39,15 +39,19 @@ class MiniMapWidget extends StatelessWidget {
                 // Use locked bounds if available, otherwise calculate once
                 // Destination stays fixed, only user position moves within bounds
                 final route = controller.routePoints;
-                debugPrint('🗺️ [MiniMapWidget] Rendering: routePoints count=${route.length}');
-                
+                debugPrint(
+                  '🗺️ [MiniMapWidget] Rendering: routePoints count=${route.length}',
+                );
+
                 final bounds =
                     controller.mapBounds.value ??
                     controller.calculateMapBounds(
                       userPosition: controller.mapDisplayPosition.value,
                     );
 
-                debugPrint('🗺️ [MiniMapWidget] MapBounds: minLat=${bounds.minLat.toStringAsFixed(6)}, maxLat=${bounds.maxLat.toStringAsFixed(6)}, minLng=${bounds.minLng.toStringAsFixed(6)}, maxLng=${bounds.maxLng.toStringAsFixed(6)}');
+                debugPrint(
+                  '🗺️ [MiniMapWidget] MapBounds: minLat=${bounds.minLat.toStringAsFixed(6)}, maxLat=${bounds.maxLat.toStringAsFixed(6)}, minLng=${bounds.minLng.toStringAsFixed(6)}, maxLng=${bounds.maxLng.toStringAsFixed(6)}',
+                );
 
                 final destination = LatLng(
                   controller.target.latitude,
@@ -58,17 +62,22 @@ class MiniMapWidget extends StatelessWidget {
                   bounds,
                   mapSize,
                 );
-                debugPrint('🗺️ [MiniMapWidget] Destination pixel: dx=${destinationOffset.dx.toStringAsFixed(1)}, dy=${destinationOffset.dy.toStringAsFixed(1)}');
+                debugPrint(
+                  '🗺️ [MiniMapWidget] Destination pixel: dx=${destinationOffset.dx.toStringAsFixed(1)}, dy=${destinationOffset.dy.toStringAsFixed(1)}',
+                );
 
-                // Prefer snapped position on the route for drawing the user,
-                // fall back to the smoothed mapDisplayPosition.
+                // Use fast-update path for near real-time map display.
+                // Prefer snapped position on the route, fall back to fast-update position.
                 final userPosition =
-                    controller.snappedUserPosition ?? controller.mapDisplayPosition.value;
+                    controller.snappedUserPositionFast ??
+                    controller.mapDisplayPositionFast.value;
                 final Offset? userOffset = userPosition != null
                     ? controller.latLngToPixel(userPosition, bounds, mapSize)
                     : null;
                 if (userOffset != null) {
-                  debugPrint('🗺️ [MiniMapWidget] User pixel: dx=${userOffset.dx.toStringAsFixed(1)}, dy=${userOffset.dy.toStringAsFixed(1)}');
+                  debugPrint(
+                    '🗺️ [MiniMapWidget] User pixel: dx=${userOffset.dx.toStringAsFixed(1)}, dy=${userOffset.dy.toStringAsFixed(1)}',
+                  );
                 } else {
                   debugPrint('🗺️ [MiniMapWidget] User position is null');
                 }
@@ -165,8 +174,10 @@ class _RoutePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final route = controller.routePoints;
-    debugPrint('🗺️ [_RoutePainter] paint() called: route.length=${route.length}, mapSize=${mapSize.width.toStringAsFixed(1)}x${mapSize.height.toStringAsFixed(1)}');
-    
+    debugPrint(
+      '🗺️ [_RoutePainter] paint() called: route.length=${route.length}, mapSize=${mapSize.width.toStringAsFixed(1)}x${mapSize.height.toStringAsFixed(1)}',
+    );
+
     if (route.isEmpty) {
       debugPrint('🗺️ [_RoutePainter] Route has 0 points, skipping draw');
       return;
@@ -177,9 +188,13 @@ class _RoutePainter extends CustomPainter {
         .map((p) => controller.latLngToPixel(p, bounds, mapSize))
         .toList();
 
-    debugPrint('🗺️ [_RoutePainter] Converted ${points.length} route points to pixels (markers only):');
+    debugPrint(
+      '🗺️ [_RoutePainter] Converted ${points.length} route points to pixels (markers only):',
+    );
     for (var i = 0; i < points.length; i++) {
-      debugPrint('🗺️ [_RoutePainter] Point[$i]: pixel=(${points[i].dx.toStringAsFixed(1)}, ${points[i].dy.toStringAsFixed(1)}), lat=${route[i].lat.toStringAsFixed(6)}, lng=${route[i].lng.toStringAsFixed(6)}');
+      debugPrint(
+        '🗺️ [_RoutePainter] Point[$i]: pixel=(${points[i].dx.toStringAsFixed(1)}, ${points[i].dy.toStringAsFixed(1)}), lat=${route[i].lat.toStringAsFixed(6)}, lng=${route[i].lng.toStringAsFixed(6)}',
+      );
     }
 
     // Draw markers only for waypoints (exclude destination - it has the location pin icon).
