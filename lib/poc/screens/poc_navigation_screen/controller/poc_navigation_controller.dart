@@ -38,16 +38,16 @@ class PocNavigationController extends GetxController {
   static const Duration _stateChangeCooldown = Duration(milliseconds: 500);
 
   // Distance smoothing
+  // _minStableGpsSamples and _stableGpsCount are no longer used by simplified
+  // distance logic but kept for potential future tuning.
   static const int _minStableGpsSamples = 3;
   static const double _distanceSmoothingFactor =
-      0.55; // faster distance updates
+      0.9; // lighter smoothing for faster distance updates
   static const int _initialSamplesForBounds = 4;
   static const double _minMapSpanDegrees = 0.0008;
   static const double _minDistanceChangeMeters =
-      1.5; // more responsive to smaller movements
-  static const Duration _distanceUpdateDebounce = Duration(
-    milliseconds: 200, // optimized from 700ms for faster updates
-  ); // Debounce distance updates
+      0.3; // more responsive to smaller movements
+  // _distanceUpdateDebounce is no longer used in the simplified distance logic.
 
   // Map jitter control - adaptive smoothing for map marker
   static const double _jitterIgnoreThresholdMeters =
@@ -110,12 +110,12 @@ class PocNavigationController extends GetxController {
       90.0; // Max valid jump between readings
   static const Duration _headingStalenessThreshold = Duration(seconds: 5);
   static const double _compassSmoothingFactor =
-      0.3; // Light smoothing for compass (30% new, 70% old)
+      0.8; // More responsive compass (80% new, 20% old)
 
   // Synchronization: track last update timestamps to ensure position and heading are recent
   DateTime? _lastPositionUpdate;
   static const Duration _maxPositionHeadingAge = Duration(
-    seconds: 2,
+    seconds: 1,
   ); // Max age for valid data pair
 
   // Waypoint Configuration
@@ -152,6 +152,7 @@ class PocNavigationController extends GetxController {
   bool _mapBoundsLocked = false;
   Timer? _distanceUpdateTimer;
   double? _lastDisplayedDistance;
+  DateTime? _lastDistanceUpdate;
 
   /// Route points used for 2D mini-map polyline (start -> checkpoints -> destination).
   /// Backed by [List] so we can initialize after construction while keeping
@@ -318,7 +319,8 @@ class PocNavigationController extends GetxController {
     _updateDistanceFromPosition(position);
   }
 
-  /// Update distance calculation from smoothed position
+  /// Update distance calculation from current GPS position.
+  /// Simplified: direct distance + light smoothing, minimal delay.
   void _updateDistanceFromPosition(LatLng position) {
     final distanceMeters = Geolocator.distanceBetween(
       position.lat,
@@ -327,71 +329,32 @@ class PocNavigationController extends GetxController {
       target.longitude,
     );
 
-    // Raw guard: unless we are clearly walking away,
-    // do NOT allow the displayed distance to increase.
-    if (_lastDisplayedDistance != null) {
-      final rawDelta = distanceMeters - _lastDisplayedDistance!;
-
-      // Case A: user is not moving → never allow increases
-      if (!_isUserMoving && rawDelta >= 0) {
-        return;
-      }
-
-      // Case B: user is moving, but distance wants to go UP.
-      // Only accept this if direction + speed say "clearly walking away".
-      if (_isUserMoving && rawDelta > 0) {
-        final clearlyAway = _isClearlyWalkingAway(position, distanceMeters);
-        if (!clearlyAway) {
-          return;
-        }
-      }
-    }
-
-    // Initialize smoothed distance if null
+    // Simple smoothing without artificial delays
     if (_smoothedDistanceMeters == null) {
       _smoothedDistanceMeters = distanceMeters;
-      _stableGpsCount = 1;
-      _lastDisplayedDistance = distanceMeters;
     } else {
-      // Update smoothed distance using weighted average
       _smoothedDistanceMeters =
           _distanceSmoothingFactor * distanceMeters +
           (1 - _distanceSmoothingFactor) * _smoothedDistanceMeters!;
-      _stableGpsCount++;
-
-      // Safety clamp: do not allow sudden large increases (likely noise)
-      if (_lastDisplayedDistance != null && _smoothedDistanceMeters != null) {
-        final rawIncrease = _smoothedDistanceMeters! - _lastDisplayedDistance!;
-
-        // If distance suddenly jumps up by more than 6m, treat it as noise
-        if (rawIncrease > 6.0) {
-          _smoothedDistanceMeters = _lastDisplayedDistance;
-        }
-      }
     }
 
-    // Only update display distance once we have enough stable samples
-    if (_stableGpsCount >= _minStableGpsSamples) {
-      // Check if change is significant enough to update
-      final change = _lastDisplayedDistance != null
-          ? (_smoothedDistanceMeters! - _lastDisplayedDistance!).abs()
-          : double.infinity;
+    final double smoothed = _smoothedDistanceMeters!;
 
-      if (change >= _minDistanceChangeMeters ||
-          _lastDisplayedDistance == null) {
-        // Update immediately if change is significant
-        _lastDisplayedDistance = _smoothedDistanceMeters;
-        displayDistanceMeters.value = _smoothedDistanceMeters;
-      } else {
-        // Debounce small changes
-        _distanceUpdateTimer?.cancel();
-        _distanceUpdateTimer = Timer(_distanceUpdateDebounce, () {
-          if (!_isDisposed && _smoothedDistanceMeters != null) {
-            _lastDisplayedDistance = _smoothedDistanceMeters;
-            displayDistanceMeters.value = _smoothedDistanceMeters;
-          }
-        });
-      }
+    // Update immediately if change is significant (>0.5m) or it's been >500ms
+    final change = _lastDisplayedDistance != null
+        ? (smoothed - _lastDisplayedDistance!).abs()
+        : double.infinity;
+
+    final now = DateTime.now();
+    final shouldForceUpdate = _lastDistanceUpdate == null
+        ? true
+        : now.difference(_lastDistanceUpdate!) >
+              const Duration(milliseconds: 500);
+
+    if (change >= _minDistanceChangeMeters || shouldForceUpdate) {
+      _lastDisplayedDistance = smoothed;
+      _lastDistanceUpdate = now;
+      displayDistanceMeters.value = smoothed;
     }
   }
 
@@ -1257,14 +1220,11 @@ class PocNavigationController extends GetxController {
     }
   }
 
-  /// Get navigation arrow rotation with debug logging
-  /// Uses fast-update position to match map display and checks data freshness
+  /// Get navigation arrow rotation with debug logging.
+  /// Uses a single, consistent position source and validates data freshness.
   double get navigationArrowRadians {
-    // Use fast-update position to match map display (consistent source)
-    final position =
-        mapDisplayPositionFast.value ??
-        mapDisplayPosition.value ??
-        currentPosition.value;
+    // Use a single position source for compass calculations
+    final position = currentPosition.value;
     final heading = headingDegrees.value;
     final now = DateTime.now();
 
@@ -1279,20 +1239,30 @@ class PocNavigationController extends GetxController {
     }
 
     // Check data freshness: ensure position and heading are recent
-    bool positionStale =
-        _lastPositionUpdate == null ||
-        now.difference(_lastPositionUpdate!) > _maxPositionHeadingAge;
-    bool headingStale =
-        _lastHeadingUpdate == null ||
-        now.difference(_lastHeadingUpdate!) > _maxPositionHeadingAge;
+    bool positionStale = false;
+    bool headingStale = false;
+
+    if (_lastPositionUpdate != null) {
+      final posAge = now.difference(_lastPositionUpdate!);
+      positionStale = posAge > _maxPositionHeadingAge;
+    } else {
+      positionStale = true;
+    }
+
+    if (_lastHeadingUpdate != null) {
+      final headAge = now.difference(_lastHeadingUpdate!);
+      headingStale = headAge > _maxPositionHeadingAge;
+    } else {
+      headingStale = true;
+    }
 
     if (positionStale || headingStale) {
       if (kDebugMode) {
         debugPrint(
-          '⚠️ Navigation data stale - Position: ${positionStale ? "stale" : "fresh"}, Heading: ${headingStale ? "stale" : "fresh"}',
+          '⚠️ Using stale data for compass - Position: ${positionStale ? "stale" : "fresh"}, Heading: ${headingStale ? "stale" : "fresh"}',
         );
       }
-      // Still calculate but log the issue
+      // Still calculate but clearly log the issue
     }
 
     final bearing = bearingBetween(

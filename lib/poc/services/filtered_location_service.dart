@@ -77,6 +77,8 @@ class FilteredLocationService {
   Timer? _interpTimer;
 
   /// Exposed derived values (optional but useful):
+  ///
+  ///
   double? currentSpeedMps; // computed from lastValid -> current
   double? currentCourseDegrees; // bearing of movement, 0–360°
 
@@ -84,12 +86,12 @@ class FilteredLocationService {
     this.maxHumanSpeedMps = 3.0, // indoor walking, ~11 km/h
     this.jumpDistanceMeters = 25.0,
     this.jumpTimeThreshold = const Duration(seconds: 3),
-    this.alpha = 0.6, // optimized for faster response (was 0.25)
+    this.alpha = 0.9, // very fast response for indoor navigation
     this.movingAverageWindow = 2, // reduced from 4 for less delay
-    this.accuracyThresholdMeters = 50.0, // increased from 20.0 for less aggressive filtering
+    this.accuracyThresholdMeters = 75.0, // more permissive for indoor usage
     this.interpolationDuration = const Duration(
-      milliseconds: 100,
-    ), // reduced from 250ms for faster interpolation
+      milliseconds: 50,
+    ), // kept short; interpolation will be bypassed for direct output
     this.interpolationTick = const Duration(milliseconds: 50),
   });
 
@@ -221,8 +223,10 @@ class FilteredLocationService {
     }
     final averaged = _average(_window);
 
-    // 5) Very short interpolation for smooth UI movement (120ms)
-    _interpolateTo(averaged);
+    // Direct output for minimal latency (no interpolation)
+    if (!_controller.isClosed) {
+      _controller.add(averaged);
+    }
   }
 
   double _deltaSeconds(DateTime a, DateTime b) {

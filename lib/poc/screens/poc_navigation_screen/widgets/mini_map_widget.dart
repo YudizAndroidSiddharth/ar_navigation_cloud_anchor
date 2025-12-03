@@ -165,6 +165,16 @@ class _RoutePainter extends CustomPainter {
   final MapBounds bounds;
   final Size mapSize;
 
+  // Cached paints for efficiency
+  static final Paint _waypointFillPaint = Paint()
+    ..color = Colors.redAccent.shade200
+    ..style = PaintingStyle.fill;
+
+  static final Paint _waypointStrokePaint = Paint()
+    ..color = Colors.white
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2;
+
   _RoutePainter({
     required this.controller,
     required this.bounds,
@@ -201,20 +211,9 @@ class _RoutePainter extends CustomPainter {
     // The last point in routePoints is the destination, so we skip it.
     for (var i = 0; i < points.length - 1; i++) {
       final p = points[i];
-      final color = Colors.redAccent.shade200;
       const double radius = 7;
-
-      final fillPaint = Paint()
-        ..color = color
-        ..style = PaintingStyle.fill;
-
-      final strokePaint = Paint()
-        ..color = Colors.white
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2;
-
-      canvas.drawCircle(p, radius, fillPaint);
-      canvas.drawCircle(p, radius, strokePaint);
+      canvas.drawCircle(p, radius, _waypointFillPaint);
+      canvas.drawCircle(p, radius, _waypointStrokePaint);
     }
   }
 
