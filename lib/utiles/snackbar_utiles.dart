@@ -33,7 +33,7 @@ class SnackBarUtil {
 
   /// Show success snackbar
   static void showSuccessSnackbar(BuildContext context, String message) {
-    showSnackBar(context, message, Colors.green);
+    showSnackBar(context, message, const Color(0xFF3C8C4E));
   }
 
   /// Show error snackbar

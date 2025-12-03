@@ -15,11 +15,19 @@ class _CreditRechargeScreenState extends State<CreditRechargeScreen> {
   int _availableBalance = 0;
   bool _isLoading = false;
   bool _isInitialized = false;
+  late TextEditingController _amountController;
 
   @override
   void initState() {
     super.initState();
+    _amountController = TextEditingController();
     _initializeBalance();
+  }
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    super.dispose();
   }
 
   Future<void> _initializeBalance() async {
@@ -30,11 +38,24 @@ class _CreditRechargeScreenState extends State<CreditRechargeScreen> {
     });
   }
 
+  void _updateAmount(int amount) {
+    setState(() {
+      _selectedAmount = amount;
+      _amountController.text = amount.toString();
+    });
+  }
+
+  void _onAmountChanged(String value) {
+    final amount = int.tryParse(value) ?? 0;
+    setState(() {
+      _selectedAmount = amount;
+    });
+  }
+
   void _incrementAmount() {
     setState(() {
-      if (_selectedAmount < 100) {
-        _selectedAmount += 10;
-      }
+      _selectedAmount += 10;
+      _amountController.text = _selectedAmount.toString();
     });
   }
 
@@ -42,6 +63,10 @@ class _CreditRechargeScreenState extends State<CreditRechargeScreen> {
     setState(() {
       if (_selectedAmount > 0) {
         _selectedAmount -= 10;
+        if (_selectedAmount < 0) {
+          _selectedAmount = 0;
+        }
+        _amountController.text = _selectedAmount.toString();
       }
     });
   }
@@ -72,6 +97,7 @@ class _CreditRechargeScreenState extends State<CreditRechargeScreen> {
       _isLoading = false;
       _availableBalance = newBalance;
       _selectedAmount = 0;
+      _amountController.clear();
     });
 
     if (mounted) {
@@ -97,21 +123,25 @@ class _CreditRechargeScreenState extends State<CreditRechargeScreen> {
 
     return Scaffold(
       backgroundColor: const Color(0xFFF3F6F8),
+      resizeToAvoidBottomInset: true,
       body: SafeArea(
         top: false,
         child: Stack(
           children: [
-            Column(
-              children: [
-                _renderHeader(context),
-                _renderCurvedSpacer(),
-                Expanded(
-                  child: Container(
+            SingleChildScrollView(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: Column(
+                children: [
+                  _renderHeader(context),
+                  _renderCurvedSpacer(),
+                  Container(
                     color: Colors.white,
                     child: _renderBottomSection(context),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
             if (_isLoading) _renderLoader(context),
           ],
@@ -168,22 +198,14 @@ class _CreditRechargeScreenState extends State<CreditRechargeScreen> {
                 ),
                 const SizedBox(height: 12),
                 // App name
-                Text(
-                  'GOVALIYO',
-                  style: GoogleFonts.playfairDisplay(
-                    fontSize: 28,
-                    color: Colors.white,
-                    letterSpacing: 2,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
+
                 // White circular area with checkmark
 
                 // Hindi text and balance
                 Text(
                   'उपलब्ध क्रेडिट',
                   style: GoogleFonts.notoSansDevanagari(
-                    fontSize: 18,
+                    fontSize: 22,
                     color: Colors.white,
                     fontWeight: FontWeight.w500,
                   ),
@@ -223,12 +245,14 @@ class _CreditRechargeScreenState extends State<CreditRechargeScreen> {
   }
 
   Widget _renderBottomSection(BuildContext context) {
-    return SingleChildScrollView(
+    return Padding(
       padding: const EdgeInsets.all(24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _renderCreditPurchaseControls(context),
+          const SizedBox(height: 24),
+          _renderSuggestionChips(context),
           const SizedBox(height: 24),
           _renderPurchaseButton(context),
         ],
@@ -237,44 +261,84 @@ class _CreditRechargeScreenState extends State<CreditRechargeScreen> {
   }
 
   Widget _renderCreditPurchaseControls(BuildContext context) {
-    return Center(
-      child: Container(
-        width: double.infinity,
-        height: 70,
-        decoration: BoxDecoration(
-          color: const Color(0xFFF3F6F8),
-          borderRadius: BorderRadius.circular(50),
-          border: Border.all(color: const Color(0xFF3C8C4E), width: 2),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            // Minus button
-            IconButton(
-              onPressed: _decrementAmount,
-              icon: const Icon(Icons.remove_circle_outline),
-              iconSize: 40,
-              color: const Color(0xFF3C8C4E),
-            ),
-            // Amount display
-            Text(
-              '₹$_selectedAmount',
+    return Container(
+      width: double.infinity,
+      height: 70,
+      decoration: BoxDecoration(
+        color: const Color(0xFFF3F6F8),
+        borderRadius: BorderRadius.circular(50),
+        border: Border.all(color: const Color(0xFF3C8C4E), width: 2),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          // Decrement button
+          IconButton(
+            onPressed: _decrementAmount,
+            icon: const Icon(Icons.remove_circle_outline),
+            iconSize: 40,
+            color: const Color(0xFF3C8C4E),
+          ),
+          // Amount input field
+          Expanded(
+            child: TextField(
+              controller: _amountController,
+              keyboardType: TextInputType.number,
+              textAlign: TextAlign.center,
               style: GoogleFonts.playfairDisplay(
                 fontSize: 28,
                 fontWeight: FontWeight.bold,
                 color: const Color(0xFF3C8C4E),
               ),
+              decoration: const InputDecoration(
+                border: InputBorder.none,
+                hintText: '0',
+                hintStyle: TextStyle(color: Color(0xFF3C8C4E), fontSize: 28),
+              ),
+              onChanged: _onAmountChanged,
             ),
-            // Plus button
-            IconButton(
-              onPressed: _incrementAmount,
-              icon: const Icon(Icons.add_circle_outline),
-              iconSize: 40,
-              color: const Color(0xFF3C8C4E),
-            ),
-          ],
-        ),
+          ),
+          // Increment button
+          IconButton(
+            onPressed: _incrementAmount,
+            icon: const Icon(Icons.add_circle_outline),
+            iconSize: 40,
+            color: const Color(0xFF3C8C4E),
+          ),
+        ],
       ),
+    );
+  }
+
+  Widget _renderSuggestionChips(BuildContext context) {
+    final suggestionAmounts = [5, 10, 15, 20];
+
+    return Wrap(
+      spacing: 12,
+      runSpacing: 12,
+      alignment: WrapAlignment.center,
+      children: suggestionAmounts.map((amount) {
+        final isSelected = _selectedAmount == amount;
+        return GestureDetector(
+          onTap: () => _updateAmount(amount),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            decoration: BoxDecoration(
+              color: isSelected ? const Color(0xFF3C8C4E) : Colors.white,
+              borderRadius: BorderRadius.circular(30),
+              border: Border.all(color: const Color(0xFF3C8C4E), width: 2),
+            ),
+            child: Text(
+              '₹$amount',
+              style: GoogleFonts.playfairDisplay(
+                fontSize: 22,
+                fontWeight: FontWeight.w600,
+                color: isSelected ? Colors.white : const Color(0xFF3C8C4E),
+              ),
+            ),
+          ),
+        );
+      }).toList(),
     );
   }
 

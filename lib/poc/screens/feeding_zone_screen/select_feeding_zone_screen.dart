@@ -10,7 +10,6 @@ import 'package:ar_navigation_cloud_anchor/poc/models/saved_location.dart';
 import 'package:ar_navigation_cloud_anchor/poc/storage/location_storage.dart';
 import 'package:ar_navigation_cloud_anchor/poc/utils/pref_utiles.dart';
 import 'package:ar_navigation_cloud_anchor/utiles/snackbar_utiles.dart';
-import 'package:ar_navigation_cloud_anchor/poc/widgets/custom_button.dart';
 import 'package:ar_navigation_cloud_anchor/poc/utils/geo_utils.dart';
 
 class SelectFeedingZoneScreen extends StatefulWidget {
@@ -145,17 +144,10 @@ class _SelectFeedingZoneScreenState extends State<SelectFeedingZoneScreen> {
                             },
                           ),
                   ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-                    child: CustomButton(
-                      text: 'आगे बढ़ें',
-                      onPressed: _onNextPressed,
-                      width: double.infinity,
-                    ),
-                  ),
                 ],
               ),
       ),
+      bottomNavigationBar: _renderBottomButton(context),
     );
   }
 
@@ -349,7 +341,45 @@ class _SelectFeedingZoneScreenState extends State<SelectFeedingZoneScreen> {
     final fallback = [
       LatLng(location.latitude, location.longitude),
     ];
-    debugPrint('🗺️ [SelectFeedingZone] Fallback route[0]: lat=${fallback[0].lat.toStringAsFixed(6)}, lng=${fallback[0].lng.toStringAsFixed(6)}');
+      debugPrint('🗺️ [SelectFeedingZone] Fallback route[0]: lat=${fallback[0].lat.toStringAsFixed(6)}, lng=${fallback[0].lng.toStringAsFixed(6)}');
     return fallback;
+  }
+
+  Widget _renderBottomButton(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 4,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: SizedBox(
+        width: double.infinity,
+        height: 56,
+        child: ElevatedButton(
+          onPressed: _onNextPressed,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF3C8C4E),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(50),
+            ),
+            elevation: 0,
+          ),
+          child: Text(
+            'आगे बढ़ें',
+            style: GoogleFonts.notoSansDevanagari(
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+              color: Colors.white,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

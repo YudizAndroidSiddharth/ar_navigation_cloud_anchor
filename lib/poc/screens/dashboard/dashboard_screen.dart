@@ -30,8 +30,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF3F6F8),
-      body: SafeArea(top: false, child: _renderBody(context)),
+      backgroundColor: const Color(0xFF3C8C4E),
+      body: SafeArea(
+        top: false,
+        child: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Color(0xFF3C8C4E), Color(0xFF66A86A)],
+            ),
+          ),
+          child: _renderBody(context),
+        ),
+      ),
     );
   }
 
@@ -86,11 +98,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Stack(
         children: [
           Container(
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Color(0xFF3C8C4E), Color(0xFF66A86A)],
+            decoration: const BoxDecoration(
+              color: Colors.white, // header area is white
+              borderRadius: BorderRadius.only(
+                topLeft: Radius.circular(32),
+                topRight: Radius.circular(32),
               ),
             ),
           ),
@@ -100,7 +112,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: IconButton(
               onPressed: () => Navigator.maybePop(context),
               icon: const Icon(Icons.arrow_back_ios_new_rounded),
-              color: Colors.white,
+              color: Color(0xFF3C8C4E),
             ),
           ),
           Center(
@@ -121,15 +133,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                // Text(
-                //   'GOVALIYO',
-                //   style: GoogleFonts.playfairDisplay(
-                //     fontSize: 28,
-                //     color: Colors.white,
-                //     letterSpacing: 2,
-                //     fontWeight: FontWeight.w600,
-                //   ),
-                // ),
               ],
             ),
           ),
@@ -145,7 +148,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         height: 48,
         width: double.infinity,
         decoration: const BoxDecoration(
-          color: Colors.white,
+          color: Color.fromARGB(255, 62, 141, 80), // middle green section
           borderRadius: BorderRadius.only(
             topLeft: Radius.circular(32),
             topRight: Radius.circular(32),

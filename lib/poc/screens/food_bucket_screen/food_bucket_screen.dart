@@ -60,7 +60,7 @@ class _FoodBucketScreenState extends State<FoodBucketScreen> {
       CowFoodItem(
         name: 'गीला चारा',
         imagePath: 'assets/images/food_green.jpg',
-        price: 30,
+        price: 15,
       ),
       CowFoodItem(
         name: 'घूघळी',
@@ -70,17 +70,17 @@ class _FoodBucketScreenState extends State<FoodBucketScreen> {
       CowFoodItem(
         name: 'कपासिया खोळ',
         imagePath: 'assets/images/khol.jpeg',
-        price: 40,
+        price: 10,
       ),
       CowFoodItem(
         name: 'मक्के का भूसा',
         imagePath: 'assets/images/corn.jpg',
-        price: 50,
+        price: 20,
       ),
       CowFoodItem(
         name: 'मग की चुनी',
         imagePath: 'assets/images/mung_chuni.jpeg',
-        price: 60,
+        price: 15,
       ),
     ];
     _filteredFoodItems = List.from(_allFoodItems);
