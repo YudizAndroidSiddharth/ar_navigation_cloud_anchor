@@ -34,12 +34,35 @@ class GpsNavigationService {
     );
 
     await _compassSubscription?.cancel();
-    _compassSubscription = FlutterCompass.events?.listen(
-      (event) => onHeading(event.heading),
-      onError: (error, stackTrace) {
-        debugPrint('❌ Compass stream error: $error');
-      },
-    );
+    
+    // Check compass availability before subscribing
+    final compassStream = FlutterCompass.events;
+    if (compassStream == null) {
+      debugPrint('⚠️ Compass is not available on this device');
+      // Notify that compass is unavailable but continue with GPS tracking
+      onHeading(null);
+    } else {
+      _compassSubscription = compassStream.listen(
+        (event) {
+          // Validate heading before passing it
+          final heading = event.heading;
+          if (heading != null && heading.isFinite) {
+            onHeading(heading);
+          } else {
+            debugPrint('⚠️ Invalid compass heading received: $heading');
+            onHeading(null);
+          }
+        },
+        onError: (error, stackTrace) {
+          debugPrint('❌ Compass stream error: $error');
+          debugPrint('Stack trace: $stackTrace');
+          // Notify error but continue
+          onHeading(null);
+        },
+        cancelOnError: false, // Keep stream alive even on errors
+      );
+      debugPrint('✅ Compass tracking started');
+    }
     debugPrint('✅ GPS tracking started');
   }
 

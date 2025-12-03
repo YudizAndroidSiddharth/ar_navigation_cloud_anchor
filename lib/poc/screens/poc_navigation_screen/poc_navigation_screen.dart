@@ -92,7 +92,7 @@ class _PocNavigationScreenState extends State<PocNavigationScreen> {
       centerTitle: true,
       backgroundColor: Colors.transparent,
       elevation: 0,
-      actions: [],
+      actions: [_renderCurrentLocationBadge()],
     );
   }
 
@@ -217,5 +217,32 @@ class _PocNavigationScreenState extends State<PocNavigationScreen> {
         ],
       ),
     );
+  }
+
+  /// Small top-corner badge showing the user's current Lat/Lng in real time.
+  /// Uses Obx to listen to `controller.currentPosition`.
+  Widget _renderCurrentLocationBadge() {
+    return Obx(() {
+      final pos = controller.currentPosition.value;
+      final text = pos == null
+          ? 'Loc: --'
+          : 'Loc: ${pos.lat.toStringAsFixed(5)}, ${pos.lng.toStringAsFixed(5)}';
+
+      return Padding(
+        padding: const EdgeInsets.only(right: 12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.4),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.white24),
+          ),
+          child: Text(
+            text,
+            style: const TextStyle(color: Colors.white, fontSize: 11),
+          ),
+        ),
+      );
+    });
   }
 }

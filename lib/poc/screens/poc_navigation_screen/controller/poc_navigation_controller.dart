@@ -74,7 +74,8 @@ class PocNavigationController extends GetxController {
   final permissionsGranted = false.obs;
   final currentPosition = Rxn<LatLng>();
   final mapDisplayPosition = Rxn<LatLng>();
-  final mapDisplayPositionFast = Rxn<LatLng>(); // Fast-update path for map display
+  final mapDisplayPositionFast =
+      Rxn<LatLng>(); // Fast-update path for map display
   final headingDegrees = Rxn<double>();
   final displayDistanceMeters = Rxn<double>();
   final hasShownSuccess = false.obs;
@@ -101,6 +102,21 @@ class PocNavigationController extends GetxController {
   bool _isUserMoving = false;
   int _movingSamples = 0;
   int _stationarySamples = 0;
+
+  // Compass heading state for validation and smoothing
+  double? _lastValidHeading;
+  DateTime? _lastHeadingUpdate;
+  static const double _maxHeadingJumpDegrees =
+      90.0; // Max valid jump between readings
+  static const Duration _headingStalenessThreshold = Duration(seconds: 5);
+  static const double _compassSmoothingFactor =
+      0.3; // Light smoothing for compass (30% new, 70% old)
+
+  // Synchronization: track last update timestamps to ensure position and heading are recent
+  DateTime? _lastPositionUpdate;
+  static const Duration _maxPositionHeadingAge = Duration(
+    seconds: 2,
+  ); // Max age for valid data pair
 
   // Waypoint Configuration
   final List<BleWaypoint> _waypoints = [
@@ -271,14 +287,29 @@ class PocNavigationController extends GetxController {
 
   /// Handle GPS updates with smoothing
   void _handleGpsUpdate(LatLng position) {
+    // Guard: ignore updates if controller is disposed
+    if (_isDisposed) {
+      debugPrint('⚠️ GPS update ignored: controller is disposed');
+      return;
+    }
+
     debugPrint(
       '🔄 GPS update received: lat=${position.lat.toStringAsFixed(6)}, lng=${position.lng.toStringAsFixed(6)}',
     );
 
     _updateMovementState();
 
+    // If the user/device is effectively stationary, ignore small GPS changes.
+    // This prevents the blue dot and compass arrow from drifting when you are not moving.
+    if (!_isUserMoving && currentPosition.value != null) {
+      debugPrint('🛑 GPS update ignored: user detected as stationary');
+      return;
+    }
+
     // Store latest filtered position
     currentPosition.value = position;
+    _lastPositionUpdate =
+        DateTime.now(); // Track position update time for synchronization
 
     // Map uses adaptively smoothed marker (ignores jitter, responds to real movement)
     _updateMapDisplayPosition(position);
@@ -364,10 +395,85 @@ class PocNavigationController extends GetxController {
     }
   }
 
-  /// Handle heading updates
+  /// Handle heading updates with validation, smoothing, and staleness tracking
   void _handleHeadingUpdate(double? heading) {
-    if (heading == null) return;
-    headingDegrees.value = heading;
+    // Guard: ignore updates if controller is disposed
+    if (_isDisposed) {
+      debugPrint('⚠️ Compass heading update ignored: controller is disposed');
+      return;
+    }
+
+    final now = DateTime.now();
+
+    // Handle null heading (compass unavailable or error)
+    if (heading == null) {
+      // Check if heading is stale (hasn't updated in a while)
+      if (_lastHeadingUpdate != null &&
+          now.difference(_lastHeadingUpdate!) > _headingStalenessThreshold) {
+        debugPrint(
+          '⚠️ Compass heading is stale (last update: ${_lastHeadingUpdate})',
+        );
+        // Keep last valid heading but mark as potentially stale
+        // Don't clear it, just log the issue
+      }
+      return;
+    }
+
+    // Validate heading value
+    if (!heading.isFinite || heading.isNaN) {
+      debugPrint('⚠️ Invalid compass heading (NaN/Infinity): $heading');
+      return;
+    }
+
+    // Normalize heading to 0-360 range
+    double normalizedHeading = heading % 360.0;
+    if (normalizedHeading < 0) normalizedHeading += 360.0;
+
+    // Validate heading jump (detect unrealistic changes)
+    if (_lastValidHeading != null) {
+      final headingDiff = (normalizedHeading - _lastValidHeading!).abs();
+      // Handle wraparound (e.g., 359° to 1° = 2° difference, not 358°)
+      final actualDiff = headingDiff > 180 ? 360 - headingDiff : headingDiff;
+
+      if (actualDiff > _maxHeadingJumpDegrees) {
+        debugPrint(
+          '⚠️ Compass heading jump too large: ${_lastValidHeading!.toStringAsFixed(1)}° → ${normalizedHeading.toStringAsFixed(1)}° (diff: ${actualDiff.toStringAsFixed(1)}°)',
+        );
+        // Reject the jump, keep last valid heading
+        return;
+      }
+    }
+
+    // Apply light smoothing to reduce jitter
+    double smoothedHeading;
+    if (_lastValidHeading == null) {
+      // First valid reading, use as-is
+      smoothedHeading = normalizedHeading;
+    } else {
+      // Smooth heading using exponential smoothing
+      // Handle wraparound for smoothing (e.g., 359° to 1°)
+      double headingDiff = normalizedHeading - _lastValidHeading!;
+      if (headingDiff > 180) {
+        headingDiff -= 360;
+      } else if (headingDiff < -180) {
+        headingDiff += 360;
+      }
+
+      smoothedHeading =
+          _lastValidHeading! + _compassSmoothingFactor * headingDiff;
+      // Normalize back to 0-360
+      smoothedHeading = smoothedHeading % 360.0;
+      if (smoothedHeading < 0) smoothedHeading += 360.0;
+    }
+
+    // Update state
+    _lastValidHeading = smoothedHeading;
+    _lastHeadingUpdate = now;
+    headingDegrees.value = smoothedHeading;
+
+    debugPrint(
+      '🧭 Compass heading updated: raw=${normalizedHeading.toStringAsFixed(1)}°, smoothed=${smoothedHeading.toStringAsFixed(1)}°',
+    );
   }
 
   /// Update internal movement state using filtered GPS speed.
@@ -704,6 +810,12 @@ class PocNavigationController extends GetxController {
 
   /// Process BLE scan results with optimized filtering
   void _processScanResults(List<ScanResult> results) {
+    // Guard: ignore if disposed
+    if (_isDisposed) {
+      debugPrint('⚠️ BLE scan results ignored: controller is disposed');
+      return;
+    }
+
     if (results.isEmpty) return;
 
     final now = DateTime.now();
@@ -1084,12 +1196,23 @@ class PocNavigationController extends GetxController {
       debugPrint('⚠️ Error disposing BLE service: $e');
     }
 
-    // Stop GPS tracking
+    // Stop GPS tracking and dispose location service
     try {
       _gpsService.stop(locationService: _locationService);
+      // Also dispose the location service to close stream controller (fire-and-forget)
+      _locationService.dispose().catchError((e) {
+        debugPrint('⚠️ Error disposing location service: $e');
+      });
     } catch (e) {
       debugPrint('⚠️ Error stopping GPS: $e');
     }
+
+    // Clear observables to prevent further rebuilds
+    currentPosition.value = null;
+    mapDisplayPosition.value = null;
+    mapDisplayPositionFast.value = null;
+    headingDegrees.value = null;
+    displayDistanceMeters.value = null;
 
     // Disable wakelock
     try {
@@ -1111,16 +1234,65 @@ class PocNavigationController extends GetxController {
   /// Check if compass heading is available
   bool get hasHeading => headingDegrees.value != null;
 
-  /// Get navigation arrow rotation with debug logging
-  double get navigationArrowRadians {
-    final position = currentPosition.value;
-    final heading = headingDegrees.value;
+  /// Check if compass heading is fresh (updated recently)
+  bool get isHeadingFresh {
+    if (_lastHeadingUpdate == null) return false;
+    final age = DateTime.now().difference(_lastHeadingUpdate!);
+    return age <= _headingStalenessThreshold;
+  }
 
+  /// Check if compass is calibrated and working properly
+  bool get isCompassCalibrated {
+    return hasHeading && isHeadingFresh;
+  }
+
+  /// Get compass calibration status message (for UI display if needed)
+  String get compassStatusMessage {
+    if (!hasHeading) {
+      return 'Compass unavailable';
+    } else if (!isHeadingFresh) {
+      return 'Compass calibrating...';
+    } else {
+      return 'Compass ready';
+    }
+  }
+
+  /// Get navigation arrow rotation with debug logging
+  /// Uses fast-update position to match map display and checks data freshness
+  double get navigationArrowRadians {
+    // Use fast-update position to match map display (consistent source)
+    final position =
+        mapDisplayPositionFast.value ??
+        mapDisplayPosition.value ??
+        currentPosition.value;
+    final heading = headingDegrees.value;
+    final now = DateTime.now();
+
+    // Check if data is available
     if (position == null || heading == null) {
-      debugPrint(
-        '🧭 Navigation: Missing data - Position: $position, Heading: $heading',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          '🧭 Navigation: Missing data - Position: ${position != null ? "present" : "null"}, Heading: ${heading != null ? "present" : "null"}',
+        );
+      }
       return 0.0;
+    }
+
+    // Check data freshness: ensure position and heading are recent
+    bool positionStale =
+        _lastPositionUpdate == null ||
+        now.difference(_lastPositionUpdate!) > _maxPositionHeadingAge;
+    bool headingStale =
+        _lastHeadingUpdate == null ||
+        now.difference(_lastHeadingUpdate!) > _maxPositionHeadingAge;
+
+    if (positionStale || headingStale) {
+      if (kDebugMode) {
+        debugPrint(
+          '⚠️ Navigation data stale - Position: ${positionStale ? "stale" : "fresh"}, Heading: ${headingStale ? "stale" : "fresh"}',
+        );
+      }
+      // Still calculate but log the issue
     }
 
     final bearing = bearingBetween(
@@ -1149,6 +1321,9 @@ class PocNavigationController extends GetxController {
         '🔄 Arrow Rotation: ${(radians * 180 / math.pi).toStringAsFixed(1)}°',
       );
       debugPrint('📏 Distance: ${distanceText}');
+      debugPrint(
+        '📊 Data freshness: Position=${positionStale ? "stale" : "fresh"}, Heading=${headingStale ? "stale" : "fresh"}',
+      );
       debugPrint('🧭 ==================');
     }
 
