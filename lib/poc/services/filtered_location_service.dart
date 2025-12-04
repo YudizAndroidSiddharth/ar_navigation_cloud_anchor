@@ -90,9 +90,9 @@ class FilteredLocationService {
     this.movingAverageWindow = 2, // reduced from 4 for less delay
     this.accuracyThresholdMeters = 75.0, // more permissive for indoor usage
     this.interpolationDuration = const Duration(
-      milliseconds: 50,
+      milliseconds: 25,
     ), // kept short; interpolation will be bypassed for direct output
-    this.interpolationTick = const Duration(milliseconds: 50),
+    this.interpolationTick = const Duration(milliseconds: 25),
   });
 
   /// Filtered, lightly-smoothed UI-ready position stream (~1-2 second lag).
