@@ -353,14 +353,7 @@ class _FeedingZoneScreenState extends State<FeedingZoneScreen> {
           padding: const EdgeInsets.only(top: 4),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '${loc.latitude.toStringAsFixed(6)}, ${loc.longitude.toStringAsFixed(6)}',
-                style: theme.textTheme.bodySmall,
-              ),
-              const SizedBox(height: 4),
-              _buildRouteSummary(loc, theme),
-            ],
+            children: [_buildRouteSummary(loc, theme)],
           ),
         ),
         trailing: IconButton(
@@ -372,10 +365,9 @@ class _FeedingZoneScreenState extends State<FeedingZoneScreen> {
   }
 
   Widget _buildRouteSummary(SavedLocation loc, ThemeData theme) {
-    final waypoints = loc.routePoints
-        .where((p) => p.type == RoutePointType.waypoint)
-        .toList()
-      ..sort((a, b) => a.order.compareTo(b.order));
+    final waypoints =
+        loc.routePoints.where((p) => p.type == RoutePointType.waypoint).toList()
+          ..sort((a, b) => a.order.compareTo(b.order));
     final destination = loc.routePoints
         .where((p) => p.type == RoutePointType.destination)
         .toList();
@@ -387,23 +379,39 @@ class _FeedingZoneScreenState extends State<FeedingZoneScreen> {
       );
     }
 
-    final wpCount = waypoints.length;
-    final hasDestination = destination.isNotEmpty;
-    final parts = <String>[];
-    if (wpCount > 0) {
-      parts.add('$wpCount waypoint${wpCount == 1 ? '' : 's'}');
-    }
-    if (hasDestination) {
-      parts.add('destination');
+    final List<Widget> rows = [];
+
+    for (final p in waypoints) {
+      rows.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Text(
+            'Waypoint ${p.order}${p.label.isNotEmpty ? ' (${p.label})' : ''}',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: const Color(0xFF3C8C4E),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      );
     }
 
-    return Text(
-      'Route: ${parts.join(' + ')}',
-      style: theme.textTheme.bodySmall?.copyWith(
-        color: const Color(0xFF3C8C4E),
-        fontWeight: FontWeight.w600,
-      ),
-    );
+    if (destination.isNotEmpty) {
+      rows.add(
+        Padding(
+          padding: EdgeInsets.only(top: waypoints.isNotEmpty ? 4 : 0),
+          child: Text(
+            'Destination set',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: const Color(0xFF3C8C4E),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: rows);
   }
 
   Future<void> _openRouteEditor(SavedLocation loc) async {
@@ -418,6 +426,7 @@ class _FeedingZoneScreenState extends State<FeedingZoneScreen> {
         return RouteEditorSheet(
           storage: _storage,
           initialLocation: loc,
+          zones: _zones,
           onUpdated: _loadLocations,
         );
       },
@@ -544,12 +553,14 @@ class RouteEditorSheet extends StatefulWidget {
   const RouteEditorSheet({
     required this.storage,
     required this.initialLocation,
+    required this.zones,
     required this.onUpdated,
     super.key,
   });
 
   final LocationStorage storage;
   final SavedLocation initialLocation;
+  final List<String> zones;
   final Future<void> Function() onUpdated;
 
   @override
@@ -559,11 +570,36 @@ class RouteEditorSheet extends StatefulWidget {
 class _RouteEditorSheetState extends State<RouteEditorSheet> {
   late SavedLocation _location;
   bool _isSaving = false;
+  String? _selectedZone;
+  final TextEditingController _nicknameController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _location = widget.initialLocation;
+    _selectedZone = _inferZoneFromName(_location.name);
+    _nicknameController.text = _inferNicknameFromName(_location.name);
+  }
+
+  @override
+  void dispose() {
+    _nicknameController.dispose();
+    super.dispose();
+  }
+
+  String? _inferZoneFromName(String name) {
+    for (final zone in widget.zones) {
+      if (name.startsWith(zone)) return zone;
+    }
+    return null;
+  }
+
+  String _inferNicknameFromName(String name) {
+    final zone = _inferZoneFromName(name);
+    if (zone != null && name.startsWith('$zone - ')) {
+      return name.substring(zone.length + 3);
+    }
+    return '';
   }
 
   List<RoutePoint> get _sortedWaypoints {
@@ -574,75 +610,43 @@ class _RouteEditorSheetState extends State<RouteEditorSheet> {
     return list;
   }
 
-  RoutePoint? get _destination {
-    for (final p in _location.routePoints) {
-      if (p.type == RoutePointType.destination) {
-        return p;
-      }
+  int _nextWaypointOrder() {
+    if (_sortedWaypoints.isEmpty) return 1;
+    return _sortedWaypoints
+            .map((p) => p.order)
+            .reduce((a, b) => a > b ? a : b) +
+        1;
+  }
+
+  Future<void> _addWaypointFromForm() async {
+    if (_isSaving) return;
+    final zone = _selectedZone;
+    final nickname = _nicknameController.text.trim();
+
+    if (zone == null) {
+      SnackBarUtil.showErrorSnackbar(context, 'कृपया कोई ज़ोन चुनें');
+      return;
     }
-    return null;
-  }
+    if (nickname.isEmpty) {
+      SnackBarUtil.showErrorSnackbar(context, 'कृपया निकनेम दर्ज करें');
+      return;
+    }
 
-  Future<void> _addOrUpdateWaypoint() async {
-    if (_isSaving) return;
-
-    final controller = TextEditingController();
-    final waypointNumber = await showDialog<int>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Which waypoint number is this?'),
-          content: TextField(
-            controller: controller,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: 'Waypoint number (1, 2, 3, ...)',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () {
-                final value = int.tryParse(controller.text.trim());
-                if (value == null || value <= 0) {
-                  SnackBarUtil.showErrorSnackbar(
-                    context,
-                    'Please enter a valid positive number',
-                  );
-                  return;
-                }
-                Navigator.pop(context, value);
-              },
-              child: const Text('OK'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (waypointNumber == null) return;
-
-    await _saveCurrentPositionAsPoint(
+    final label = '$zone - $nickname';
+    final saved = await _saveCurrentPositionAsPoint(
       type: RoutePointType.waypoint,
-      order: waypointNumber,
+      order: _nextWaypointOrder(),
+      label: label,
     );
+    if (saved && mounted) {
+      Navigator.of(context).pop();
+    }
   }
 
-  Future<void> _setDestination() async {
-    if (_isSaving) return;
-    await _saveCurrentPositionAsPoint(
-      type: RoutePointType.destination,
-      order: _sortedWaypoints.length + 1,
-      alsoUpdateLocationLatLng: true,
-    );
-  }
-
-  Future<void> _saveCurrentPositionAsPoint({
+  Future<bool> _saveCurrentPositionAsPoint({
     required RoutePointType type,
     required int order,
+    String label = '',
     bool alsoUpdateLocationLatLng = false,
   }) async {
     setState(() => _isSaving = true);
@@ -655,9 +659,7 @@ class _RouteEditorSheetState extends State<RouteEditorSheet> {
 
       if (type == RoutePointType.destination) {
         // Ensure we only ever have a single destination.
-        updatedPoints.removeWhere(
-          (p) => p.type == RoutePointType.destination,
-        );
+        updatedPoints.removeWhere((p) => p.type == RoutePointType.destination);
       }
 
       final existingIndex = updatedPoints.indexWhere(
@@ -668,6 +670,7 @@ class _RouteEditorSheetState extends State<RouteEditorSheet> {
         order: order,
         latitude: position.latitude,
         longitude: position.longitude,
+        label: label,
       );
 
       if (existingIndex >= 0) {
@@ -693,7 +696,7 @@ class _RouteEditorSheetState extends State<RouteEditorSheet> {
       await widget.storage.upsertLocationByName(updatedLocation);
       await widget.onUpdated();
 
-      if (!mounted) return;
+      if (!mounted) return true;
       setState(() {
         _location = updatedLocation;
         _isSaving = false;
@@ -705,13 +708,12 @@ class _RouteEditorSheetState extends State<RouteEditorSheet> {
             ? 'Destination saved for this zone'
             : 'Waypoint $order saved for this zone',
       );
+      return true;
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() => _isSaving = false);
-      SnackBarUtil.showErrorSnackbar(
-        context,
-        'Unable to save location: $e',
-      );
+      SnackBarUtil.showErrorSnackbar(context, 'Unable to save location: $e');
+      return false;
     }
   }
 
@@ -719,7 +721,6 @@ class _RouteEditorSheetState extends State<RouteEditorSheet> {
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
     final waypoints = _sortedWaypoints;
-    final destination = _destination;
 
     return Padding(
       padding: EdgeInsets.only(
@@ -741,81 +742,76 @@ class _RouteEditorSheetState extends State<RouteEditorSheet> {
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 16),
-          if (waypoints.isEmpty && destination == null)
-            Text(
-              'No route points yet.\nAdd waypoints first, then set destination.',
-              textAlign: TextAlign.center,
-              style: GoogleFonts.notoSansDevanagari(
-                fontSize: 14,
-                color: Colors.grey[700],
-              ),
-            )
-          else
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (waypoints.isNotEmpty)
-                  Text(
-                    'Waypoints:',
-                    style: GoogleFonts.notoSansDevanagari(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                if (waypoints.isNotEmpty) const SizedBox(height: 8),
-                ...waypoints.map(
-                  (p) => Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Text(
-                      'Waypoint ${p.order}: '
-                      '${p.latitude.toStringAsFixed(6)}, '
-                      '${p.longitude.toStringAsFixed(6)}',
-                      style: GoogleFonts.notoSansDevanagari(fontSize: 14),
-                    ),
-                  ),
-                ),
-                if (destination != null) ...[
-                  if (waypoints.isNotEmpty) const SizedBox(height: 12),
-                  Text(
-                    'Destination:',
-                    style: GoogleFonts.notoSansDevanagari(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${destination.latitude.toStringAsFixed(6)}, '
-                    '${destination.longitude.toStringAsFixed(6)}',
-                    style: GoogleFonts.notoSansDevanagari(fontSize: 14),
-                  ),
-                ],
-              ],
+          DropdownButtonFormField<String>(
+            decoration: const InputDecoration(
+              labelText: 'Waypoint',
+              border: OutlineInputBorder(),
             ),
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              Expanded(
-                child: CustomButton(
-                  text: 'Add waypoint',
-                  onPressed: _addOrUpdateWaypoint,
-                  isLoading: _isSaving,
-                  width: double.infinity,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: CustomButton(
-                  text: 'Set destination',
-                  onPressed: _setDestination,
-                  isLoading: _isSaving,
-                  width: double.infinity,
-                ),
-              ),
-            ],
+            value: _selectedZone,
+            items: widget.zones
+                .map((zone) => DropdownMenuItem(value: zone, child: Text(zone)))
+                .toList(),
+            onChanged: (value) => setState(() => _selectedZone = value),
           ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _nicknameController,
+            decoration: const InputDecoration(
+              labelText: 'Waypoint nickname',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          CustomButton(
+            text: 'Add waypoint',
+            onPressed: _addWaypointFromForm,
+            isLoading: _isSaving,
+            width: double.infinity,
+          ),
+          const SizedBox(height: 16),
+          Divider(color: Colors.grey[300]),
+          const SizedBox(height: 12),
+          _buildRouteDetails(waypoints),
         ],
       ),
+    );
+  }
+
+  Widget _buildRouteDetails(List<RoutePoint> waypoints) {
+    if (waypoints.isEmpty) {
+      return Text(
+        'No route points yet. Add a waypoint to get started.',
+        textAlign: TextAlign.center,
+        style: GoogleFonts.notoSansDevanagari(
+          fontSize: 14,
+          color: Colors.grey[700],
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (waypoints.isNotEmpty)
+          Text(
+            'Waypoints:',
+            style: GoogleFonts.notoSansDevanagari(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        if (waypoints.isNotEmpty) const SizedBox(height: 8),
+        ...waypoints.map(
+          (p) => Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Text(
+              'Waypoint ${p.order}${p.label.isNotEmpty ? ' (${p.label})' : ''}: '
+              '${p.latitude.toStringAsFixed(6)}, ${p.longitude.toStringAsFixed(6)}',
+              style: GoogleFonts.notoSansDevanagari(fontSize: 14),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

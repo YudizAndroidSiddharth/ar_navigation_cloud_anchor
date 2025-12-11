@@ -90,7 +90,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _renderHeader(BuildContext context) {
     final size = MediaQuery.of(context).size;
     final headerHeight = size.height * 0.40;
-    final statusBarHeight = MediaQuery.of(context).padding.top;
 
     return SizedBox(
       height: headerHeight,
@@ -99,20 +98,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         children: [
           Container(
             decoration: const BoxDecoration(
-              color: Colors.white, // header area is white
-              borderRadius: BorderRadius.only(
-                topLeft: Radius.circular(32),
-                topRight: Radius.circular(32),
-              ),
-            ),
-          ),
-          Positioned(
-            top: statusBarHeight + 16,
-            left: 8,
-            child: IconButton(
-              onPressed: () => Navigator.maybePop(context),
-              icon: const Icon(Icons.arrow_back_ios_new_rounded),
-              color: Color(0xFF3C8C4E),
+              color: Colors.white, // header area is white without curved top
             ),
           ),
           Center(
