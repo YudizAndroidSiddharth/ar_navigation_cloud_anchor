@@ -126,16 +126,19 @@ class BleNavigationService {
 
   /// Stop scanning and cleanup
   Future<void> stopScanning() async {
-    if (!_isScanning) return;
-
     debugPrint('🛑 Stopping BLE scanning');
 
     try {
+      // Always cancel subscription, even if _isScanning is false
+      // This ensures cleanup works even if state is inconsistent
       await _scanSubscription?.cancel();
       _scanSubscription = null;
 
-      await FlutterBluePlus.stopScan();
-      _isScanning = false;
+      // Stop the scan if it's running
+      if (_isScanning) {
+        await FlutterBluePlus.stopScan();
+        _isScanning = false;
+      }
 
       debugPrint('✅ BLE scanning stopped');
     } catch (e) {
@@ -156,15 +159,31 @@ class BleNavigationService {
 
   /// Dispose service and cleanup all resources
   Future<void> dispose() async {
-    if (_isDisposed) return;
+    if (_isDisposed) {
+      debugPrint('⚠️ BLE service already disposed, skipping');
+      return;
+    }
 
     debugPrint('🗑️ Disposing BLE navigation service');
 
     _isDisposed = true;
 
-    await stopScanning();
-    await _adapterSubscription?.cancel();
-    _adapterSubscription = null;
+    // Cancel adapter subscription first to prevent restart attempts
+    try {
+      await _adapterSubscription?.cancel();
+      _adapterSubscription = null;
+      debugPrint('✅ BLE adapter subscription cancelled');
+    } catch (e) {
+      debugPrint('⚠️ Error cancelling adapter subscription: $e');
+    }
+
+    // Stop scanning and cancel scan subscription
+    try {
+      await stopScanning();
+      debugPrint('✅ BLE scanning stopped');
+    } catch (e) {
+      debugPrint('⚠️ Error stopping BLE scan: $e');
+    }
 
     debugPrint('✅ BLE navigation service disposed');
   }

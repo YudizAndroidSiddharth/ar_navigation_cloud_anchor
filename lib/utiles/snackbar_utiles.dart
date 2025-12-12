@@ -4,7 +4,14 @@ import 'package:google_fonts/google_fonts.dart';
 class SnackBarUtil {
   /// Clear all snackbars from the scaffold messenger
   static void clearSnackBars(BuildContext context) {
-    ScaffoldMessenger.of(context).clearSnackBars();
+    try {
+      // Check if context is still valid before accessing ScaffoldMessenger
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+    } catch (e) {
+      // Silently ignore errors when context is deactivated
+      debugPrint('⚠️ Error clearing snackbars: $e');
+    }
   }
 
   /// Show a snackbar with custom message, color, and optional action
@@ -15,20 +22,31 @@ class SnackBarUtil {
     SnackBarAction? action,
     Duration duration = const Duration(seconds: 3),
   }) {
-    // Clear any existing snackbars first
-    clearSnackBars(context);
+    try {
+      // Check if context is still valid before accessing ScaffoldMessenger
+      if (!context.mounted) {
+        debugPrint('⚠️ Cannot show snackbar: context is not mounted');
+        return;
+      }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message, style: GoogleFonts.notoSansDevanagari()),
-        backgroundColor: backgroundColor,
-        action: action,
-        duration: duration,
-        behavior: SnackBarBehavior.floating,
-        margin: const EdgeInsets.only(top: 16, left: 16, right: 16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      ),
-    );
+      // Clear any existing snackbars first
+      clearSnackBars(context);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message, style: GoogleFonts.notoSansDevanagari()),
+          backgroundColor: backgroundColor,
+          action: action,
+          duration: duration,
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.only(top: 16, left: 16, right: 16),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        ),
+      );
+    } catch (e) {
+      // Silently ignore errors when context is deactivated
+      debugPrint('⚠️ Error showing snackbar: $e');
+    }
   }
 
   /// Show success snackbar

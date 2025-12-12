@@ -34,7 +34,7 @@ class GpsNavigationService {
     );
 
     await _compassSubscription?.cancel();
-    
+
     // Check compass availability before subscribing
     final compassStream = FlutterCompass.events;
     if (compassStream == null) {
@@ -67,8 +67,34 @@ class GpsNavigationService {
   }
 
   Future<void> stop({required FilteredLocationService locationService}) async {
-    await _positionSubscription?.cancel();
-    await _compassSubscription?.cancel();
-    await locationService.stop();
+    debugPrint('🛑 Stopping GPS and compass tracking');
+
+    try {
+      // Cancel compass subscription first to stop compass updates immediately
+      await _compassSubscription?.cancel();
+      _compassSubscription = null;
+      debugPrint('✅ Compass subscription cancelled');
+    } catch (e) {
+      debugPrint('⚠️ Error cancelling compass subscription: $e');
+    }
+
+    try {
+      // Cancel position subscription
+      await _positionSubscription?.cancel();
+      _positionSubscription = null;
+      debugPrint('✅ GPS position subscription cancelled');
+    } catch (e) {
+      debugPrint('⚠️ Error cancelling position subscription: $e');
+    }
+
+    try {
+      // Stop location service
+      await locationService.stop();
+      debugPrint('✅ Location service stopped');
+    } catch (e) {
+      debugPrint('⚠️ Error stopping location service: $e');
+    }
+
+    debugPrint('✅ GPS and compass tracking stopped');
   }
 }

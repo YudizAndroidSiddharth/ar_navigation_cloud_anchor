@@ -18,6 +18,8 @@ import '../../../services/filtered_location_service.dart';
 import '../../../services/gps_navigation_service.dart';
 import '../../../services/ble_navigation_service.dart';
 import '../../../utils/geo_utils.dart';
+import '../../dashboard/dashboard_screen.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 /// Production-ready POC Navigation Controller
 /// Optimized for continuous BLE scanning with smooth UI updates
@@ -48,6 +50,9 @@ class PocNavigationController extends GetxController {
   static const double _minDistanceChangeMeters =
       0.2; // more responsive to smaller movements
   // _distanceUpdateDebounce is no longer used in the simplified distance logic.
+
+  // Destination reached threshold
+  static const double _destinationThresholdMeters = 8.0;
 
   // Map jitter control - adaptive smoothing for map marker
   static const double _jitterIgnoreThresholdMeters =
@@ -427,6 +432,11 @@ class PocNavigationController extends GetxController {
       // Normalize back to 0-360
       smoothedHeading = smoothedHeading % 360.0;
       if (smoothedHeading < 0) smoothedHeading += 360.0;
+    }
+
+    // Final guard: double-check disposed before updating state
+    if (_isDisposed) {
+      return;
     }
 
     // Update state
@@ -818,6 +828,11 @@ class PocNavigationController extends GetxController {
 
   /// Match device to waypoint with logging
   String? _matchDevice(BluetoothDevice device) {
+    // Guard: don't process if disposed
+    if (_isDisposed) {
+      return null;
+    }
+
     final deviceId = device.remoteId.toString().toUpperCase();
     final waypointId = _deviceToWaypointMap[deviceId];
 
@@ -1092,20 +1107,134 @@ class PocNavigationController extends GetxController {
     signalQuality.refresh();
   }
 
+  /// Extract zone name from target.name.
+  /// If name contains " - " separator, returns the part before it (e.g., "गोकुल - Main CR" → "गोकुल").
+  /// Otherwise, returns the full name.
+  String _extractDestinationName() {
+    final name = target.name;
+    if (name.isEmpty) return 'Destination';
+
+    final separatorIndex = name.indexOf(' - ');
+    if (separatorIndex > 0) {
+      return name.substring(0, separatorIndex);
+    }
+    return name;
+  }
+
   void _checkDestinationReached() {
     final distance = displayDistanceMeters.value;
-    if (distance != null && distance <= 5.0 && !hasShownSuccess.value) {
+    if (distance != null &&
+        distance <= _destinationThresholdMeters &&
+        !hasShownSuccess.value) {
       hasShownSuccess.value = true;
       if (Get.context != null) {
-        SnackBarUtil.showSuccessSnackbar(
-          Get.context!,
-          'You have reached near your destination',
-        );
+        _showDestinationReachedDialog();
       }
     }
   }
 
+  /// Show dialog when user reaches near destination
+  void _showDestinationReachedDialog() {
+    final destinationName = _extractDestinationName();
+
+    showDialog(
+      context: Get.context!,
+      barrierDismissible: false,
+      builder: (context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.1),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Success Icon
+                Container(
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF3C8C4E).withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.check_circle,
+                    size: 50,
+                    color: Color(0xFF3C8C4E),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                // Title
+                Text(
+                  'Near Destination',
+                  style: GoogleFonts.notoSansDevanagari(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w700,
+                    color: const Color(0xFF1F1F1F),
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                // Content
+                Text(
+                  'You are near to $destinationName.\nYou can now feed to cow.',
+                  style: GoogleFonts.notoSansDevanagari(
+                    fontSize: 16,
+                    color: const Color(0xFF666666),
+                    height: 1.5,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                // OK Button
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                      cleanup(); // Stop all services before navigation
+                      Get.offAll(() => const DashboardScreen());
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF3C8C4E),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: Text(
+                      'OK',
+                      style: GoogleFonts.notoSansDevanagari(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   /// Cleanup resources - Public method to allow manual cleanup
+  /// This method is synchronous but initiates async cleanup operations
   void cleanup() {
     _cleanup();
   }
@@ -1119,7 +1248,7 @@ class PocNavigationController extends GetxController {
 
     debugPrint('🧹 Cleaning up POC Navigation Controller');
 
-    // Mark as disposed FIRST to prevent any restart attempts
+    // Mark as disposed FIRST to prevent any restart attempts or callback processing
     _isDisposed = true;
 
     // Set scanning to false immediately to prevent new operations
@@ -1134,7 +1263,7 @@ class PocNavigationController extends GetxController {
       }
     }
 
-    // Cancel timers
+    // Cancel timers immediately
     try {
       _timeoutTimer?.cancel();
       _timeoutTimer = null;
@@ -1146,29 +1275,47 @@ class PocNavigationController extends GetxController {
       debugPrint('⚠️ Error cancelling timers: $e');
     }
 
-    // Dispose workers
-    _rssiWorker?.dispose();
-    _rssiWorker = null;
-    _distanceWorker?.dispose();
-    _distanceWorker = null;
-
-    // Stop BLE scanning via service
+    // Dispose workers immediately
     try {
-      _bleService.dispose();
+      _rssiWorker?.dispose();
+      _rssiWorker = null;
+      _distanceWorker?.dispose();
+      _distanceWorker = null;
     } catch (e) {
-      debugPrint('⚠️ Error disposing BLE service: $e');
+      debugPrint('⚠️ Error disposing workers: $e');
     }
 
-    // Stop GPS tracking and dispose location service
-    try {
-      _gpsService.stop(locationService: _locationService);
-      // Also dispose the location service to close stream controller (fire-and-forget)
-      _locationService.dispose().catchError((e) {
-        debugPrint('⚠️ Error disposing location service: $e');
-      });
-    } catch (e) {
-      debugPrint('⚠️ Error stopping GPS: $e');
-    }
+    // Stop BLE scanning via service - must be called to stop subscriptions
+    // Fire-and-forget with error handling since onClose() is synchronous
+    _bleService
+        .dispose()
+        .then((_) {
+          debugPrint('✅ BLE service disposed successfully');
+        })
+        .catchError((e) {
+          debugPrint('⚠️ Error disposing BLE service: $e');
+        });
+
+    // Stop GPS tracking and compass - must be called to stop subscriptions
+    // Fire-and-forget with error handling since onClose() is synchronous
+    _gpsService
+        .stop(locationService: _locationService)
+        .then((_) {
+          debugPrint('✅ GPS service stopped successfully');
+        })
+        .catchError((e) {
+          debugPrint('⚠️ Error stopping GPS service: $e');
+        });
+
+    // Also dispose the location service to close stream controller
+    _locationService
+        .dispose()
+        .then((_) {
+          debugPrint('✅ Location service disposed successfully');
+        })
+        .catchError((e) {
+          debugPrint('⚠️ Error disposing location service: $e');
+        });
 
     // Clear observables to prevent further rebuilds
     currentPosition.value = null;
@@ -1184,7 +1331,7 @@ class PocNavigationController extends GetxController {
       debugPrint('⚠️ Error disabling wakelock: $e');
     }
 
-    debugPrint('✅ POC Navigation Controller cleanup complete');
+    debugPrint('✅ POC Navigation Controller cleanup initiated');
   }
 
   // Public API for UI

@@ -126,22 +126,30 @@ class _FoodBucketScreenState extends State<FoodBucketScreen> {
     final total = _getSelectedTotal();
 
     if (total > _availableCredit) {
-      SnackBarUtil.showWarningSnackbar(
-        context,
-        'क्रेडिट अपर्याप्त है। कृपया क्रेडिट खरीदें।',
-        action: SnackBarAction(
-          label: 'क्रेडिट खरीदें',
-          textColor: Colors.white,
-          onPressed: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => const CreditRechargeScreen(),
-              ),
-            ).then((_) => _loadAvailableCredit());
-          },
-        ),
-      );
+      if (mounted) {
+        SnackBarUtil.showWarningSnackbar(
+          context,
+          'क्रेडिट अपर्याप्त है। कृपया क्रेडिट खरीदें।',
+          action: SnackBarAction(
+            label: 'क्रेडिट खरीदें',
+            textColor: Colors.white,
+            onPressed: () {
+              if (mounted) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const CreditRechargeScreen(),
+                  ),
+                ).then((_) {
+                  if (mounted) {
+                    _loadAvailableCredit();
+                  }
+                });
+              }
+            },
+          ),
+        );
+      }
       return;
     }
 
@@ -157,19 +165,27 @@ class _FoodBucketScreenState extends State<FoodBucketScreen> {
       }
     });
 
-    SnackBarUtil.showInfoSnackbar(
-      context,
-      'सफलतापूर्वक खरीदारी की गई। शेष क्रेडिट: ₹$newBalance',
-    );
-    navigator?.push(
-      MaterialPageRoute(builder: (context) => const CowSelctionScreen()),
-    );
+    // Only show snackbar if widget is still mounted
+    if (mounted) {
+      SnackBarUtil.showInfoSnackbar(
+        context,
+        'सफलतापूर्वक खरीदारी की गई। शेष क्रेडिट: ₹$newBalance',
+      );
+    }
+
+    if (mounted) {
+      navigator?.push(
+        MaterialPageRoute(builder: (context) => const CowSelctionScreen()),
+      );
+    }
   }
 
   @override
   void dispose() {
-    // Clear snackbars when leaving the screen
-    SnackBarUtil.clearSnackBars(context);
+    // Clear snackbars when leaving the screen (only if still mounted)
+    if (mounted) {
+      SnackBarUtil.clearSnackBars(context);
+    }
     _searchController.dispose();
     super.dispose();
   }
@@ -182,7 +198,7 @@ class _FoodBucketScreenState extends State<FoodBucketScreen> {
 
     return PopScope(
       onPopInvoked: (didPop) {
-        if (didPop) {
+        if (didPop && mounted) {
           // Clear snackbars when navigating back
           SnackBarUtil.clearSnackBars(context);
         }

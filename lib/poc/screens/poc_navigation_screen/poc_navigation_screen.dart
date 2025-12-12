@@ -1,3 +1,4 @@
+import 'package:ar_navigation_cloud_anchor/poc/screens/poc_navigation_screen/widgets/signal_analytics_card.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
@@ -120,15 +121,15 @@ class _PocNavigationScreenState extends State<PocNavigationScreen> {
         const SizedBox(height: 24),
         _renderNavigationArea(),
         const SizedBox(height: 16),
-        // Padding(
-        //   padding: const EdgeInsets.symmetric(horizontal: 16),
-        //   child: SignalAnalyticsCard(controller: controller),
-        // ),
-        // const SizedBox(height: 12),
-        MiniMapWidget(
-          controller: controller,
-          mapAssetPath: 'assets/images/bhalka2D_map.png',
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: SignalAnalyticsCard(controller: controller),
         ),
+        const SizedBox(height: 12),
+        // MiniMapWidget(
+        //   controller: controller,
+        //   mapAssetPath: 'assets/images/bhalka2D_map.png',
+        // ),
         _renderDistanceInfo(),
       ],
     );
