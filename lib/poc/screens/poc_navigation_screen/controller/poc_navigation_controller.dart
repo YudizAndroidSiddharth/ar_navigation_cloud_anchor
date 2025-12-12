@@ -46,7 +46,7 @@ class PocNavigationController extends GetxController {
   static const int _initialSamplesForBounds = 4;
   static const double _minMapSpanDegrees = 0.0008;
   static const double _minDistanceChangeMeters =
-      0.3; // more responsive to smaller movements
+      0.2; // more responsive to smaller movements
   // _distanceUpdateDebounce is no longer used in the simplified distance logic.
 
   // Map jitter control - adaptive smoothing for map marker
@@ -349,7 +349,7 @@ class PocNavigationController extends GetxController {
     final shouldForceUpdate = _lastDistanceUpdate == null
         ? true
         : now.difference(_lastDistanceUpdate!) >
-              const Duration(milliseconds: 500);
+              const Duration(milliseconds: 250);
 
     if (change >= _minDistanceChangeMeters || shouldForceUpdate) {
       _lastDisplayedDistance = smoothed;

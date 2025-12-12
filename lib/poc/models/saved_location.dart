@@ -37,20 +37,23 @@ class RoutePoint {
   final int order;
   final double latitude;
   final double longitude;
+  final String label;
 
   const RoutePoint({
     required this.type,
     required this.order,
     required this.latitude,
     required this.longitude,
+    this.label = '',
   });
 
   Map<String, dynamic> toJson() => {
-        'type': type.jsonValue,
-        'order': order,
-        'latitude': latitude,
-        'longitude': longitude,
-      };
+    'type': type.jsonValue,
+    'order': order,
+    'latitude': latitude,
+    'longitude': longitude,
+    if (label.isNotEmpty) 'label': label,
+  };
 
   factory RoutePoint.fromJson(Map<String, dynamic> json) {
     return RoutePoint(
@@ -60,6 +63,7 @@ class RoutePoint {
       order: (json['order'] as num?)?.toInt() ?? 1,
       latitude: (json['latitude'] as num).toDouble(),
       longitude: (json['longitude'] as num).toDouble(),
+      label: (json['label'] as String? ?? '').trim(),
     );
   }
 }
@@ -130,5 +134,3 @@ class SavedLocation {
         .toList();
   }
 }
-
-
